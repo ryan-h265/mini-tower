@@ -1,23 +1,36 @@
 # MiniTower MVP Plan (Thin Tower Concepts)
 
 ## 0. Goal (MVP)
-Build a small, correct orchestration system in Go with Tower-like concepts, but minimal surface area:
+
+Build a small, **correctness-first orchestration system** in Go with Tower-like concepts, but minimal surface area:
 
 - `app` and immutable `version`
 - `run` execution via self-hosted `runner`
 - tenant/environment scaffolding (`team`, `default` environment only)
 
+**Correctness in MVP explicitly means:**
+- No double execution
+- Monotonic state transitions
+- Deterministic retries
+- Race-safe leasing and mutation
+
 MVP target: deploy a version, trigger runs, stream logs, support retries/cancel, and keep state race-safe.
 
+---
+
 ## 1. Simplicity Rules
+
 1. Keep schema future-proof, keep API surface small.
 2. Prefer one clear path per workflow (no duplicate ways to do the same thing).
-3. Defer any feature that is not required for deploy -> run -> observe.
-4. Prefer explicit state over implicit behavior
+3. Defer any feature that is not required for deploy → run → observe.
+4. **Prefer explicit state over implicit behavior.**
+
+---
 
 ## 2. Scope
 
 ### In Scope (MVP)
+
 - Single bootstrap team (no public team management API).
 - Single required environment: `default` (stored in DB, no environment CRUD API yet).
 - App CRUD (minimal), version creation from packaged source artifact, run trigger/list/get/cancel, run logs.
@@ -27,6 +40,9 @@ MVP target: deploy a version, trigger runs, stream logs, support retries/cancel,
 - Structured logs, Prometheus metrics, health/readiness.
 
 ### Deferred (Post-MVP)
+
+Deferred features are **intentionally excluded** to minimize the failure surface while validating orchestration correctness.
+
 - Multi-team self-service management.
 - Environment CRUD and environment-specific overrides.
 - Schedules/cron.
@@ -35,26 +51,35 @@ MVP target: deploy a version, trigger runs, stream logs, support retries/cancel,
 - Hardened sandboxing (containers/microVMs/seccomp/cgroups).
 - UI and advanced RBAC.
 
+---
+
 ## 3. Architecture
 
 ### Control Plane
+
 - HTTP+JSON API.
 - SQLite as system of record.
 - Local object store path for version artifacts.
 - Scheduler goroutine for lease expiry/retry/dead transitions.
-- Never executes customer workload.
+- **Never executes customer workload.**
 
 ### Runner
+
 - Registers once, polls for work, executes via `os/exec`.
 - Heartbeats, streams logs, reports result.
 - One active run at a time (`max_concurrent = 1` in MVP).
 - Creates an isolated per-run workspace and private `venv`.
 
 ### Isolation Note (MVP)
+
 - Per-run `venv` + process controls provide dependency isolation.
-- This is not a hardened security sandbox.
+- This is **not** a hardened security sandbox.
+- **Threat model explicitly excluded:** malicious workloads, privilege escalation, host compromise.
+
+---
 
 ## 4. Domain Model (MVP)
+
 1. `Team`: tenant boundary (bootstrap-created once).
 2. `Environment`: one row per team for `default`.
 3. `App`: logical workload identity.
@@ -64,22 +89,27 @@ MVP target: deploy a version, trigger runs, stream logs, support retries/cancel,
 7. `Runner`: self-hosted worker bound to team + environment.
 8. `RunLog`: stdout/stderr lines keyed by attempt sequence.
 
+---
+
 ## 5. Status Model and Invariants
 
 ### Run Statuses
+
 - Non-terminal: `queued`, `leased`, `running`, `cancelling`
 - Terminal: `completed`, `failed`, `cancelled`, `dead`
 
 ### Run Transitions
-1. `queued -> leased` on successful lease.
-2. `leased -> running` on runner start acknowledgement.
-3. `running -> completed|failed|cancelled` on result report.
-4. `queued -> cancelled` on admin cancel before lease.
-5. `leased|running -> cancelling` on admin cancel in-flight.
-6. `leased|running -> queued` on lease expiry if retry budget remains.
-7. `leased|running -> dead` on lease expiry if retries exhausted.
+
+1. `queued → leased` on successful lease.
+2. `leased → running` on runner start acknowledgement.
+3. `running → completed | failed | cancelled` on result report.
+4. `queued → cancelled` on admin cancel before lease.
+5. `leased | running → cancelling` on admin cancel in-flight.
+6. `leased | running → queued` on lease expiry if retry budget remains.
+7. `leased | running → dead` on lease expiry if retries exhausted.
 
 ### Hard Invariants
+
 1. Only one active lease per run.
 2. Only current lease holder can heartbeat/log/result.
 3. Terminal runs are immutable.
@@ -87,10 +117,15 @@ MVP target: deploy a version, trigger runs, stream logs, support retries/cancel,
 5. Log dedupe key is `(run_attempt_id, seq)`.
 6. All queries are team-scoped by token-derived `team_id`.
 7. All time comparisons use server UTC Unix milliseconds.
+8. **State transitions are monotonic; attempts never move backwards.**
+9. **All transitions are enforced via conditional updates (CAS) at the DB layer.**
+
+---
 
 ## 6. Database Schema (MVP)
 
 ### Tables
+
 - `teams(id, slug, name, registration_token_hash, created_at, updated_at)`
 - `team_tokens(id, team_id, token_hash, created_at, revoked_at, last_used_at)`
 - `environments(id, team_id, name, is_default, created_at, updated_at, UNIQUE(team_id,name))`
@@ -101,34 +136,48 @@ MVP target: deploy a version, trigger runs, stream logs, support retries/cancel,
 - `run_logs(id, run_attempt_id, seq, stream, line, logged_at, UNIQUE(run_attempt_id,seq))`
 - `runners(id, team_id, name, environment_id, labels_json, token_hash, status, max_concurrent, last_seen_at, created_at, updated_at, UNIQUE(team_id,name))`
 
+> `runs.status` and `run_attempts.status` are intentionally duplicated to avoid join-heavy hot paths during scheduling and monitoring.
+
 ### SQLite Runtime
+
 - `PRAGMA journal_mode=WAL`
 - `PRAGMA foreign_keys=ON`
 - `PRAGMA busy_timeout=5000`
 - `PRAGMA synchronous=NORMAL`
-- Write DB handle with `SetMaxOpenConns(1)`.
+- Write DB handle with `SetMaxOpenConns(1)`
+
+SQLite is intentionally used to surface concurrency and transactional edge cases early, rather than masking them with a more forgiving database.
+
+---
 
 ## 7. API Contract (MVP)
 
+All endpoints are authenticated via team-scoped tokens.  
+Runner endpoints additionally require **lease token authentication** where applicable.
+
 ### Bootstrap/Admin
-1. `POST /api/v1/bootstrap/team` (guarded by `MINITOWER_BOOTSTRAP_TOKEN`; creates team + default environment + registration token)
-2. `POST /api/v1/tokens` (issue team API token)
+
+1. `POST /api/v1/bootstrap/team`
+2. `POST /api/v1/tokens`
 
 ### Apps and Versions
+
 1. `POST /api/v1/apps`
 2. `GET /api/v1/apps`
 3. `GET /api/v1/apps/{app}`
-4. `POST /api/v1/apps/{app}/versions` (multipart: artifact `.tar.gz`, `sha256`, `entrypoint`, `timeout_seconds`)
+4. `POST /api/v1/apps/{app}/versions`
 5. `GET /api/v1/apps/{app}/versions`
 
 ### Runs
-1. `POST /api/v1/apps/{app}/runs` (uses `default` environment in MVP)
+
+1. `POST /api/v1/apps/{app}/runs`
 2. `GET /api/v1/apps/{app}/runs`
 3. `GET /api/v1/runs/{run}`
 4. `POST /api/v1/runs/{run}/cancel`
-5. `GET /api/v1/runs/{run}/logs?attempt=&after_id=&limit=&stream=`
+5. `GET /api/v1/runs/{run}/logs`
 
 ### Runner
+
 1. `POST /api/v1/runners/register`
 2. `POST /api/v1/runs/lease`
 3. `POST /api/v1/runs/{run}/start`
@@ -151,22 +200,31 @@ Error codes: `invalid_request`, `unauthorized`, `forbidden`, `not_found`, `confl
 
 ## 8. Lease and Retry Algorithm
 
+Lease assignment is the **only code path** that transitions a run from `queued → leased`.
+
 ### Lease Claim (single transaction)
+
 1. Verify runner active and has no active attempt.
-2. Select queued runs for same `team_id` + `default` environment, order by `priority DESC, queued_at ASC`.
-3. Apply optional label subset matching in Go.
-4. Conditional update `status='queued' -> 'leased'` and set lease token hash + expiry.
-5. Create/update current attempt row.
-6. Commit.
+2. Select queued runs for same `team_id` + `default` environment.
+3. Conditional update run state (`queued → leased`) with lease token + expiry.
+4. Create new `run_attempt`.
+5. Commit.
 
 ### Expiry Reaper
+
 Runs every `MINITOWER_EXPIRY_CHECK_INTERVAL`:
-- For expired `leased|running` attempts:
-  - if retries remain: increment `retry_count`, clear lease fields, set run back to `queued`.
-  - else: set run `dead` and finalize.
-- Mark stale runners `offline`.
+- Expired attempts:
+  - retries remain → requeue
+  - retries exhausted → mark run `dead`
+- Mark stale runners offline.
+
+---
 
 ## 9. Runner Protocol (MVP)
+
+- Heartbeats and log streaming are **intentionally decoupled** to avoid log backpressure affecting liveness.
+
+
 1. Register using registration token if runner token missing.
 2. Poll lease endpoint with jitter.
 3. On lease:
@@ -263,8 +321,10 @@ Acceptance:
 6. Smoke flow works: bootstrap -> token -> app -> upload version artifact -> run -> logs -> completion.
 
 ## 14. Post-MVP Backlog (Next)
+
 1. Environment CRUD + override semantics.
 2. Secrets CRUD + runtime injection.
 3. Schedules/cron materializer.
 4. Signed webhooks and delivery retries.
 5. Rich artifact packaging and dependency caching optimizations.
+6. **Pluggable object store backend (S3-compatible).**
