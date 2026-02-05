@@ -1,109 +1,185 @@
 # MiniTower
 
-Correctness-first orchestration MVP focused on deploy -> run -> observe with explicit, race-safe state transitions.
+**A minimal, correctness-first job orchestration system.**
 
-Status: Phase 5 in PLAN.md is implemented (observability and hardening). MVP complete.
+MiniTower is a lightweight orchestration platform for deploying and running Python workloads with explicit state management. It prioritizes correctness over features: no double execution, deterministic retries, and race-safe state transitions throughout.
 
-**Requirements**
+## Features
+
+- **Apps & Versions** — Deploy immutable versioned artifacts with optional JSON Schema input validation
+- **Distributed Runners** — Self-hosted workers with lease-based execution and automatic retry on failure
+- **Cancellation** — Graceful cancellation with SIGTERM/SIGKILL and deterministic state convergence
+- **Observability** — Prometheus metrics, structured JSON logs, and per-run log streaming
+- **SQLite Storage** — Single-file database with WAL mode for concurrent reads
+
+## Architecture
+
+```
+┌─────────────────┐         ┌─────────────────┐
+│   Control Plane │◄───────►│     Runner      │
+│   (minitowerd)  │  HTTP   │ (minitower-     │
+│                 │         │     runner)     │
+│  ┌───────────┐  │         │                 │
+│  │  SQLite   │  │         │  ┌───────────┐  │
+│  │    +      │  │         │  │  Python   │  │
+│  │  Objects  │  │         │  │  Workload │  │
+│  └───────────┘  │         │  └───────────┘  │
+└─────────────────┘         └─────────────────┘
+```
+
+The control plane manages state and stores artifacts. Runners poll for work, execute Python scripts in isolated virtual environments, and report results. All state transitions use optimistic locking to prevent races.
+
+## Requirements
+
 - Go 1.24+
-- Python 3 with `venv` (runner execution)
-- `tar` available on PATH
-- SQLite driver `modernc.org/sqlite` (pure Go, no external runtime)
+- Python 3 with `venv` module
+- `tar` command available on PATH
 
-**Quickstart (Dev)**
-1. Start the control plane:
-   ```bash
-   export MINITOWER_BOOTSTRAP_TOKEN=dev
-   go run ./cmd/minitowerd
-   ```
-2. Bootstrap a team and get tokens:
-   ```bash
-   curl -sS -X POST http://localhost:8080/api/v1/bootstrap/team \
-     -H "Authorization: Bearer $MINITOWER_BOOTSTRAP_TOKEN" \
-     -H "Content-Type: application/json" \
-     -d '{"slug":"acme","name":"Acme"}'
-   ```
-3. Create an app:
-   ```bash
-   export TEAM_TOKEN=<token from bootstrap>
-   curl -sS -X POST http://localhost:8080/api/v1/apps \
-     -H "Authorization: Bearer $TEAM_TOKEN" \
-     -H "Content-Type: application/json" \
-     -d '{"slug":"hello","description":"demo app"}'
-   ```
-4. Create a version artifact:
-   ```bash
-   mkdir -p ./artifact
-   cat > ./artifact/main.py <<'PY'
-   import os
-   print("hello from minitower")
-   print("input:", os.environ.get("MINITOWER_INPUT"))
-   PY
-   tar -czf ./hello.tar.gz -C ./artifact .
-   ```
-5. Upload a version artifact:
-   ```bash
-   curl -sS -X POST http://localhost:8080/api/v1/apps/hello/versions \
-     -H "Authorization: Bearer $TEAM_TOKEN" \
-     -F artifact=@./your_artifact.tar.gz \
-     -F entrypoint=main.py \
-     -F timeout_seconds=60 \
-     -F params_schema_json='{"type":"object","properties":{"name":{"type":"string"}}}'
-   ```
-6. Enqueue a run:
-   ```bash
-   curl -sS -X POST http://localhost:8080/api/v1/apps/hello/runs \
-     -H "Authorization: Bearer $TEAM_TOKEN" \
-     -H "Content-Type: application/json" \
-     -d '{"input":{"name":"world"}}'
-   ```
-7. Start a runner:
-   ```bash
-   export MINITOWER_SERVER_URL=http://localhost:8080
-   export MINITOWER_RUNNER_NAME=runner-1
-   export MINITOWER_REGISTRATION_TOKEN=<registration_token from bootstrap>
-   go run ./cmd/minitower-runner
-   ```
+## Quickstart
 
-**Config**
-Control plane:
-- `MINITOWER_LISTEN_ADDR` (default `:8080`)
-- `MINITOWER_DB_PATH` (default `./minitower.db`)
-- `MINITOWER_OBJECTS_DIR` (default `./objects`)
-- `MINITOWER_BOOTSTRAP_TOKEN` (required outside dev)
-- `MINITOWER_LEASE_TTL` (default `60s`)
-- `MINITOWER_EXPIRY_CHECK_INTERVAL` (default `10s`)
-- `MINITOWER_MAX_REQUEST_BODY_SIZE` (default `10485760` / 10MB)
-- `MINITOWER_MAX_ARTIFACT_SIZE` (default `104857600` / 100MB)
+**1. Start the control plane:**
+```bash
+export MINITOWER_BOOTSTRAP_TOKEN=dev
+go run ./cmd/minitowerd
+```
 
-Runner:
-- `MINITOWER_SERVER_URL` (required)
-- `MINITOWER_RUNNER_NAME` (required)
-- `MINITOWER_REGISTRATION_TOKEN` (required for first register)
-- `MINITOWER_RUNNER_TOKEN` (optional after first register)
-- `MINITOWER_PYTHON_BIN` (default `python3`)
-- `MINITOWER_POLL_INTERVAL` (default `3s`)
-- `MINITOWER_KILL_GRACE_PERIOD` (default `10s`)
-- `MINITOWER_DATA_DIR` (default `~/.minitower`)
+**2. Bootstrap a team:**
+```bash
+curl -sS -X POST http://localhost:8080/api/v1/bootstrap/team \
+  -H "Authorization: Bearer dev" \
+  -H "Content-Type: application/json" \
+  -d '{"slug":"acme","name":"Acme Corp"}'
+```
 
-**Notes**
-- An artifact is a `.tar.gz` package stored by the control plane and fetched by runners per run. It must include the `entrypoint` file path you pass on version creation. If `requirements.txt` is present, the runner installs it into a per-run `venv` before executing the entrypoint. The runner verifies the artifact SHA-256 before unpacking.
-- Migrations are embedded from `internal/migrations` and applied on boot.
-- Local object store writes to `MINITOWER_OBJECTS_DIR`.
-- Run input is validated against `params_schema_json` when provided.
-- Cancellation is idempotent via `POST /api/v1/runs/{run}/cancel`.
-- Prometheus metrics available at `/metrics` (no auth required).
+Save the `token` and `registration_token` from the response.
 
-**Tests**
-- Unit/handler/store tests:
-  ```bash
-  go test ./...
-  ```
-- Runner integration tests (requires Python + `tar`):
-  ```bash
-  go test -tags=integration ./cmd/minitower-runner -run TestRunner
-  ```
-- Smoke test (end-to-end):
-  ```bash
-  ./scripts/smoke.sh
-  ```
+**3. Create an app:**
+```bash
+curl -sS -X POST http://localhost:8080/api/v1/apps \
+  -H "Authorization: Bearer $TEAM_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"slug":"hello","description":"Hello world app"}'
+```
+
+**4. Package and upload a version:**
+```bash
+# Create artifact
+mkdir -p artifact && cat > artifact/main.py << 'PY'
+import os, json
+input_data = json.loads(os.environ.get("MINITOWER_INPUT", "{}"))
+print(f"Hello, {input_data.get('name', 'World')}!")
+PY
+tar -czf hello.tar.gz -C artifact .
+
+# Upload
+curl -sS -X POST http://localhost:8080/api/v1/apps/hello/versions \
+  -H "Authorization: Bearer $TEAM_TOKEN" \
+  -F artifact=@hello.tar.gz \
+  -F entrypoint=main.py \
+  -F timeout_seconds=60
+```
+
+**5. Trigger a run:**
+```bash
+curl -sS -X POST http://localhost:8080/api/v1/apps/hello/runs \
+  -H "Authorization: Bearer $TEAM_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"input":{"name":"MiniTower"}}'
+```
+
+**6. Start a runner:**
+```bash
+MINITOWER_SERVER_URL=http://localhost:8080 \
+MINITOWER_RUNNER_NAME=runner-1 \
+MINITOWER_REGISTRATION_TOKEN=$REG_TOKEN \
+go run ./cmd/minitower-runner
+```
+
+**7. Check run status and logs:**
+```bash
+curl -sS http://localhost:8080/api/v1/runs/1 -H "Authorization: Bearer $TEAM_TOKEN"
+curl -sS http://localhost:8080/api/v1/runs/1/logs -H "Authorization: Bearer $TEAM_TOKEN"
+```
+
+## Configuration
+
+### Control Plane (`minitowerd`)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MINITOWER_LISTEN_ADDR` | `:8080` | HTTP listen address |
+| `MINITOWER_DB_PATH` | `./minitower.db` | SQLite database path |
+| `MINITOWER_OBJECTS_DIR` | `./objects` | Artifact storage directory |
+| `MINITOWER_BOOTSTRAP_TOKEN` | `dev` | Token for team bootstrap |
+| `MINITOWER_LEASE_TTL` | `60s` | Runner lease duration |
+| `MINITOWER_EXPIRY_CHECK_INTERVAL` | `10s` | Lease expiry check interval |
+| `MINITOWER_MAX_REQUEST_BODY_SIZE` | `10485760` | Max request body (10MB) |
+| `MINITOWER_MAX_ARTIFACT_SIZE` | `104857600` | Max artifact upload (100MB) |
+
+### Runner (`minitower-runner`)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MINITOWER_SERVER_URL` | — | Control plane URL (required) |
+| `MINITOWER_RUNNER_NAME` | — | Unique runner name (required) |
+| `MINITOWER_REGISTRATION_TOKEN` | — | Token for first registration |
+| `MINITOWER_RUNNER_TOKEN` | — | Saved after registration |
+| `MINITOWER_PYTHON_BIN` | `python3` | Python interpreter path |
+| `MINITOWER_POLL_INTERVAL` | `3s` | Work poll interval |
+| `MINITOWER_KILL_GRACE_PERIOD` | `10s` | SIGTERM to SIGKILL grace |
+| `MINITOWER_DATA_DIR` | `~/.minitower` | Runner data directory |
+
+## API Endpoints
+
+### Health & Metrics
+- `GET /health` — Liveness check
+- `GET /ready` — Readiness check (includes DB ping)
+- `GET /metrics` — Prometheus metrics
+
+### Team Management
+- `POST /api/v1/bootstrap/team` — Create team (bootstrap token)
+- `POST /api/v1/tokens` — Create additional API tokens
+
+### Apps & Versions
+- `POST /api/v1/apps` — Create app
+- `GET /api/v1/apps` — List apps
+- `GET /api/v1/apps/{app}` — Get app details
+- `POST /api/v1/apps/{app}/versions` — Upload version (multipart)
+- `GET /api/v1/apps/{app}/versions` — List versions
+
+### Runs
+- `POST /api/v1/apps/{app}/runs` — Trigger run
+- `GET /api/v1/apps/{app}/runs` — List runs
+- `GET /api/v1/runs/{run}` — Get run status
+- `POST /api/v1/runs/{run}/cancel` — Cancel run
+- `GET /api/v1/runs/{run}/logs` — Get run logs
+
+## How It Works
+
+**Artifacts**: A version artifact is a `.tar.gz` containing your Python code. If `requirements.txt` is present, dependencies are installed into an isolated virtual environment before execution. Artifacts are SHA-256 verified on download.
+
+**Execution**: Runners create a fresh workspace and `venv` for each run. The entrypoint script receives input via `MINITOWER_INPUT` environment variable as JSON.
+
+**Leasing**: Runners acquire exclusive leases on runs. If a runner fails to heartbeat before lease expiry, the run is automatically retried (up to `max_retries`) or marked dead.
+
+**Cancellation**: Cancel requests set `cancel_requested=true`. Runners receive this flag on heartbeat, send SIGTERM, wait for grace period, then SIGKILL if needed.
+
+## Testing
+
+```bash
+# Unit tests
+go test ./...
+
+# Race detector
+go test -race ./...
+
+# Integration tests (requires Python)
+go test -tags=integration ./cmd/minitower-runner
+
+# End-to-end smoke test
+./scripts/smoke.sh
+```
+
+## License
+
+MIT
