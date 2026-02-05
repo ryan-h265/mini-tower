@@ -12,6 +12,51 @@ import (
   "minitower/internal/store"
 )
 
+// requireLeaseContext extracts the run ID from the URL path, the lease token
+// from the X-Lease-Token header, and validates via GetActiveAttempt.
+// On failure it writes the HTTP error and returns ok=false.
+func (h *Handlers) requireLeaseContext(w http.ResponseWriter, r *http.Request, extractID func(string) int64) (runID int64, attempt *store.RunAttempt, leaseTokenHash string, ok bool) {
+  runID = extractID(r.URL.Path)
+  if runID == 0 {
+    writeError(w, http.StatusBadRequest, "invalid_request", "invalid run ID")
+    return 0, nil, "", false
+  }
+
+  leaseToken := r.Header.Get("X-Lease-Token")
+  if leaseToken == "" {
+    writeError(w, http.StatusBadRequest, "invalid_request", "missing lease token")
+    return 0, nil, "", false
+  }
+  leaseTokenHash = auth.HashToken(leaseToken)
+
+  attempt, err := h.store.GetActiveAttempt(r.Context(), runID, leaseTokenHash)
+  if writeStoreError(w, h.logger, err, "get active attempt") {
+    return 0, nil, "", false
+  }
+  return runID, attempt, leaseTokenHash, true
+}
+
+// writeAttemptResponse fetches the run for cancel status and writes the
+// standard attemptResponse JSON used by StartRun and HeartbeatRun.
+func (h *Handlers) writeAttemptResponse(w http.ResponseWriter, r *http.Request, runID int64, attempt *store.RunAttempt) {
+  teamID, _ := teamIDFromContext(r.Context())
+  run, err := h.store.GetRunByID(r.Context(), teamID, runID)
+  if err != nil {
+    h.logger.Error("get run", "error", err)
+    writeError(w, http.StatusInternalServerError, "internal", "internal error")
+    return
+  }
+
+  writeJSON(w, http.StatusOK, attemptResponse{
+    AttemptID:       attempt.ID,
+    AttemptNo:       attempt.AttemptNo,
+    Status:          attempt.Status,
+    LeaseExpiresAt:  attempt.LeaseExpiresAt.Format(time.RFC3339),
+    CancelRequested: run.CancelRequested,
+    RunStatus:       run.Status,
+  })
+}
+
 type registerRunnerRequest struct {
   Name string `json:"name"`
 }
@@ -196,73 +241,17 @@ func (h *Handlers) StartRun(w http.ResponseWriter, r *http.Request) {
     return
   }
 
-  teamID, ok := teamIDFromContext(r.Context())
+  runID, attempt, leaseTokenHash, ok := h.requireLeaseContext(w, r, extractRunIDFromPath)
   if !ok {
-    writeError(w, http.StatusUnauthorized, "unauthorized", "missing context")
     return
   }
 
-  runID := extractRunIDFromPath(r.URL.Path)
-  if runID == 0 {
-    writeError(w, http.StatusBadRequest, "invalid_request", "invalid run ID")
+  attempt, err := h.store.StartAttempt(r.Context(), attempt.ID, leaseTokenHash)
+  if writeStoreError(w, h.logger, err, "attempt is cancelling") {
     return
   }
 
-  leaseToken := r.Header.Get("X-Lease-Token")
-  if leaseToken == "" {
-    writeError(w, http.StatusBadRequest, "invalid_request", "missing lease token")
-    return
-  }
-  leaseTokenHash := auth.HashToken(leaseToken)
-
-  // Get active attempt
-  attempt, err := h.store.GetActiveAttempt(r.Context(), runID, leaseTokenHash)
-  if errors.Is(err, store.ErrInvalidLeaseToken) {
-    writeError(w, http.StatusGone, "gone", "invalid or expired lease")
-    return
-  }
-  if err != nil {
-    h.logger.Error("get active attempt", "error", err)
-    writeError(w, http.StatusInternalServerError, "internal", "internal error")
-    return
-  }
-
-  // Start attempt
-  attempt, err = h.store.StartAttempt(r.Context(), attempt.ID, leaseTokenHash)
-  if errors.Is(err, store.ErrLeaseConflict) {
-    writeError(w, http.StatusConflict, "conflict", "attempt is cancelling")
-    return
-  }
-  if errors.Is(err, store.ErrInvalidLeaseToken) {
-    writeError(w, http.StatusGone, "gone", "invalid or expired lease")
-    return
-  }
-  if errors.Is(err, store.ErrAttemptNotActive) {
-    writeError(w, http.StatusGone, "gone", "attempt not active")
-    return
-  }
-  if err != nil {
-    h.logger.Error("start attempt", "error", err)
-    writeError(w, http.StatusInternalServerError, "internal", "internal error")
-    return
-  }
-
-  // Get run for cancel status
-  run, err := h.store.GetRunByID(r.Context(), teamID, runID)
-  if err != nil {
-    h.logger.Error("get run", "error", err)
-    writeError(w, http.StatusInternalServerError, "internal", "internal error")
-    return
-  }
-
-  writeJSON(w, http.StatusOK, attemptResponse{
-    AttemptID:       attempt.ID,
-    AttemptNo:       attempt.AttemptNo,
-    Status:          attempt.Status,
-    LeaseExpiresAt:  attempt.LeaseExpiresAt.Format(time.RFC3339),
-    CancelRequested: run.CancelRequested,
-    RunStatus:       run.Status,
-  })
+  h.writeAttemptResponse(w, r, runID, attempt)
 }
 
 // HeartbeatRun extends the lease.
@@ -272,65 +261,17 @@ func (h *Handlers) HeartbeatRun(w http.ResponseWriter, r *http.Request) {
     return
   }
 
-  teamID, ok := teamIDFromContext(r.Context())
+  runID, attempt, leaseTokenHash, ok := h.requireLeaseContext(w, r, extractRunIDFromPath)
   if !ok {
-    writeError(w, http.StatusUnauthorized, "unauthorized", "missing context")
     return
   }
 
-  runID := extractRunIDFromPath(r.URL.Path)
-  if runID == 0 {
-    writeError(w, http.StatusBadRequest, "invalid_request", "invalid run ID")
+  attempt, err := h.store.ExtendLease(r.Context(), attempt.ID, leaseTokenHash, h.cfg.LeaseTTL)
+  if writeStoreError(w, h.logger, err, "extend lease") {
     return
   }
 
-  leaseToken := r.Header.Get("X-Lease-Token")
-  if leaseToken == "" {
-    writeError(w, http.StatusBadRequest, "invalid_request", "missing lease token")
-    return
-  }
-  leaseTokenHash := auth.HashToken(leaseToken)
-
-  // Get active attempt
-  attempt, err := h.store.GetActiveAttempt(r.Context(), runID, leaseTokenHash)
-  if errors.Is(err, store.ErrInvalidLeaseToken) {
-    writeError(w, http.StatusGone, "gone", "invalid or expired lease")
-    return
-  }
-  if err != nil {
-    h.logger.Error("get active attempt", "error", err)
-    writeError(w, http.StatusInternalServerError, "internal", "internal error")
-    return
-  }
-
-  // Extend lease
-  attempt, err = h.store.ExtendLease(r.Context(), attempt.ID, leaseTokenHash, h.cfg.LeaseTTL)
-  if errors.Is(err, store.ErrInvalidLeaseToken) {
-    writeError(w, http.StatusGone, "gone", "invalid or expired lease")
-    return
-  }
-  if err != nil {
-    h.logger.Error("extend lease", "error", err)
-    writeError(w, http.StatusInternalServerError, "internal", "internal error")
-    return
-  }
-
-  // Get run for cancel status
-  run, err := h.store.GetRunByID(r.Context(), teamID, runID)
-  if err != nil {
-    h.logger.Error("get run", "error", err)
-    writeError(w, http.StatusInternalServerError, "internal", "internal error")
-    return
-  }
-
-  writeJSON(w, http.StatusOK, attemptResponse{
-    AttemptID:       attempt.ID,
-    AttemptNo:       attempt.AttemptNo,
-    Status:          attempt.Status,
-    LeaseExpiresAt:  attempt.LeaseExpiresAt.Format(time.RFC3339),
-    CancelRequested: run.CancelRequested,
-    RunStatus:       run.Status,
-  })
+  h.writeAttemptResponse(w, r, runID, attempt)
 }
 
 type logBatchRequest struct {
@@ -351,18 +292,10 @@ func (h *Handlers) SubmitLogs(w http.ResponseWriter, r *http.Request) {
     return
   }
 
-  runID := extractRunIDFromPath(r.URL.Path)
-  if runID == 0 {
-    writeError(w, http.StatusBadRequest, "invalid_request", "invalid run ID")
+  _, attempt, _, ok := h.requireLeaseContext(w, r, extractRunIDFromPath)
+  if !ok {
     return
   }
-
-  leaseToken := r.Header.Get("X-Lease-Token")
-  if leaseToken == "" {
-    writeError(w, http.StatusBadRequest, "invalid_request", "missing lease token")
-    return
-  }
-  leaseTokenHash := auth.HashToken(leaseToken)
 
   var req logBatchRequest
   if err := decodeJSON(r, &req); err != nil {
@@ -377,18 +310,6 @@ func (h *Handlers) SubmitLogs(w http.ResponseWriter, r *http.Request) {
 
   if len(req.Logs) > 100 {
     writeError(w, http.StatusBadRequest, "invalid_request", "max 100 logs per batch")
-    return
-  }
-
-  // Get active attempt
-  attempt, err := h.store.GetActiveAttempt(r.Context(), runID, leaseTokenHash)
-  if errors.Is(err, store.ErrInvalidLeaseToken) {
-    writeError(w, http.StatusGone, "gone", "invalid or expired lease")
-    return
-  }
-  if err != nil {
-    h.logger.Error("get active attempt", "error", err)
-    writeError(w, http.StatusInternalServerError, "internal", "internal error")
     return
   }
 
@@ -437,18 +358,10 @@ func (h *Handlers) SubmitResult(w http.ResponseWriter, r *http.Request) {
     return
   }
 
-  runID := extractRunIDFromPath(r.URL.Path)
-  if runID == 0 {
-    writeError(w, http.StatusBadRequest, "invalid_request", "invalid run ID")
+  _, attempt, leaseTokenHash, ok := h.requireLeaseContext(w, r, extractRunIDFromPath)
+  if !ok {
     return
   }
-
-  leaseToken := r.Header.Get("X-Lease-Token")
-  if leaseToken == "" {
-    writeError(w, http.StatusBadRequest, "invalid_request", "missing lease token")
-    return
-  }
-  leaseTokenHash := auth.HashToken(leaseToken)
 
   var req resultRequest
   if err := decodeJSON(r, &req); err != nil {
@@ -467,34 +380,8 @@ func (h *Handlers) SubmitResult(w http.ResponseWriter, r *http.Request) {
     return
   }
 
-  // Get active attempt
-  attempt, err := h.store.GetActiveAttempt(r.Context(), runID, leaseTokenHash)
-  if errors.Is(err, store.ErrInvalidLeaseToken) {
-    writeError(w, http.StatusGone, "gone", "invalid or expired lease")
-    return
-  }
-  if err != nil {
-    h.logger.Error("get active attempt", "error", err)
-    writeError(w, http.StatusInternalServerError, "internal", "internal error")
-    return
-  }
-
-  err = h.store.CompleteAttempt(r.Context(), attempt.ID, leaseTokenHash, req.Status, req.ExitCode, req.ErrorMessage)
-  if errors.Is(err, store.ErrLeaseConflict) {
-    writeError(w, http.StatusConflict, "conflict", "result conflicts with attempt state")
-    return
-  }
-  if errors.Is(err, store.ErrInvalidLeaseToken) {
-    writeError(w, http.StatusGone, "gone", "invalid or expired lease")
-    return
-  }
-  if errors.Is(err, store.ErrAttemptNotActive) {
-    writeError(w, http.StatusGone, "gone", "attempt not active")
-    return
-  }
-  if err != nil {
-    h.logger.Error("complete attempt", "error", err)
-    writeError(w, http.StatusInternalServerError, "internal", "internal error")
+  err := h.store.CompleteAttempt(r.Context(), attempt.ID, leaseTokenHash, req.Status, req.ExitCode, req.ErrorMessage)
+  if writeStoreError(w, h.logger, err, "result conflicts with attempt state") {
     return
   }
 
@@ -514,28 +401,8 @@ func (h *Handlers) GetArtifact(w http.ResponseWriter, r *http.Request) {
     return
   }
 
-  runID := extractRunIDFromArtifactPath(r.URL.Path)
-  if runID == 0 {
-    writeError(w, http.StatusBadRequest, "invalid_request", "invalid run ID")
-    return
-  }
-
-  leaseToken := r.Header.Get("X-Lease-Token")
-  if leaseToken == "" {
-    writeError(w, http.StatusBadRequest, "invalid_request", "missing lease token")
-    return
-  }
-  leaseTokenHash := auth.HashToken(leaseToken)
-
-  // Verify active attempt
-  _, err := h.store.GetActiveAttempt(r.Context(), runID, leaseTokenHash)
-  if errors.Is(err, store.ErrInvalidLeaseToken) {
-    writeError(w, http.StatusGone, "gone", "invalid or expired lease")
-    return
-  }
-  if err != nil {
-    h.logger.Error("get active attempt", "error", err)
-    writeError(w, http.StatusInternalServerError, "internal", "internal error")
+  runID, _, _, ok := h.requireLeaseContext(w, r, extractRunIDFromArtifactPath)
+  if !ok {
     return
   }
 

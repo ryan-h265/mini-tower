@@ -257,20 +257,12 @@ func (s *Store) LeaseRun(ctx context.Context, runner *Runner, leaseTokenHash str
   return run, attempt, nil
 }
 
-// GetActiveAttempt returns the current active attempt for a run, validating the lease token.
-func (s *Store) GetActiveAttempt(ctx context.Context, runID int64, leaseTokenHash string) (*RunAttempt, error) {
+// scanAttempt scans a *sql.Row into a *RunAttempt, handling UnixMilli conversions and nullable times.
+func scanAttempt(row *sql.Row) (*RunAttempt, error) {
   var a RunAttempt
   var leaseExpiresAt, createdAt, updatedAt int64
   var startedAt, finishedAt sql.NullInt64
-  err := s.db.QueryRowContext(ctx,
-    `SELECT id, run_id, attempt_no, runner_id, lease_token_hash, lease_expires_at, status, exit_code, error_message, started_at, finished_at, created_at, updated_at
-     FROM run_attempts
-     WHERE run_id = ? AND lease_token_hash = ? AND status IN ('leased', 'running', 'cancelling')`,
-    runID, leaseTokenHash,
-  ).Scan(&a.ID, &a.RunID, &a.AttemptNo, &a.RunnerID, &a.LeaseTokenHash, &leaseExpiresAt, &a.Status, &a.ExitCode, &a.ErrorMessage, &startedAt, &finishedAt, &createdAt, &updatedAt)
-  if errors.Is(err, sql.ErrNoRows) {
-    return nil, ErrInvalidLeaseToken
-  }
+  err := row.Scan(&a.ID, &a.RunID, &a.AttemptNo, &a.RunnerID, &a.LeaseTokenHash, &leaseExpiresAt, &a.Status, &a.ExitCode, &a.ErrorMessage, &startedAt, &finishedAt, &createdAt, &updatedAt)
   if err != nil {
     return nil, err
   }
@@ -286,6 +278,20 @@ func (s *Store) GetActiveAttempt(ctx context.Context, runID int64, leaseTokenHas
     a.FinishedAt = &t
   }
   return &a, nil
+}
+
+// GetActiveAttempt returns the current active attempt for a run, validating the lease token.
+func (s *Store) GetActiveAttempt(ctx context.Context, runID int64, leaseTokenHash string) (*RunAttempt, error) {
+  a, err := scanAttempt(s.db.QueryRowContext(ctx,
+    `SELECT id, run_id, attempt_no, runner_id, lease_token_hash, lease_expires_at, status, exit_code, error_message, started_at, finished_at, created_at, updated_at
+     FROM run_attempts
+     WHERE run_id = ? AND lease_token_hash = ? AND status IN ('leased', 'running', 'cancelling')`,
+    runID, leaseTokenHash,
+  ))
+  if errors.Is(err, sql.ErrNoRows) {
+    return nil, ErrInvalidLeaseToken
+  }
+  return a, err
 }
 
 // StartAttempt transitions an attempt from leased to running.
@@ -343,29 +349,11 @@ func (s *Store) StartAttempt(ctx context.Context, attemptID int64, leaseTokenHas
   }
 
   // Return updated attempt
-  var a RunAttempt
-  var leaseExpiresAt, createdAt, updatedAt int64
-  var startedAt, finishedAt sql.NullInt64
-  err = s.db.QueryRowContext(ctx,
+  return scanAttempt(s.db.QueryRowContext(ctx,
     `SELECT id, run_id, attempt_no, runner_id, lease_token_hash, lease_expires_at, status, exit_code, error_message, started_at, finished_at, created_at, updated_at
      FROM run_attempts WHERE id = ?`,
     attemptID,
-  ).Scan(&a.ID, &a.RunID, &a.AttemptNo, &a.RunnerID, &a.LeaseTokenHash, &leaseExpiresAt, &a.Status, &a.ExitCode, &a.ErrorMessage, &startedAt, &finishedAt, &createdAt, &updatedAt)
-  if err != nil {
-    return nil, err
-  }
-  a.LeaseExpiresAt = time.UnixMilli(leaseExpiresAt)
-  a.CreatedAt = time.UnixMilli(createdAt)
-  a.UpdatedAt = time.UnixMilli(updatedAt)
-  if startedAt.Valid {
-    t := time.UnixMilli(startedAt.Int64)
-    a.StartedAt = &t
-  }
-  if finishedAt.Valid {
-    t := time.UnixMilli(finishedAt.Int64)
-    a.FinishedAt = &t
-  }
-  return &a, nil
+  ))
 }
 
 // ExtendLease extends the lease expiry time (heartbeat).
@@ -401,29 +389,11 @@ func (s *Store) ExtendLease(ctx context.Context, attemptID int64, leaseTokenHash
   }
 
   // Return updated attempt
-  var a RunAttempt
-  var leaseExpiresAt, createdAt, updatedAt int64
-  var startedAt, finishedAt sql.NullInt64
-  err = s.db.QueryRowContext(ctx,
+  return scanAttempt(s.db.QueryRowContext(ctx,
     `SELECT id, run_id, attempt_no, runner_id, lease_token_hash, lease_expires_at, status, exit_code, error_message, started_at, finished_at, created_at, updated_at
      FROM run_attempts WHERE id = ?`,
     attemptID,
-  ).Scan(&a.ID, &a.RunID, &a.AttemptNo, &a.RunnerID, &a.LeaseTokenHash, &leaseExpiresAt, &a.Status, &a.ExitCode, &a.ErrorMessage, &startedAt, &finishedAt, &createdAt, &updatedAt)
-  if err != nil {
-    return nil, err
-  }
-  a.LeaseExpiresAt = time.UnixMilli(leaseExpiresAt)
-  a.CreatedAt = time.UnixMilli(createdAt)
-  a.UpdatedAt = time.UnixMilli(updatedAt)
-  if startedAt.Valid {
-    t := time.UnixMilli(startedAt.Int64)
-    a.StartedAt = &t
-  }
-  if finishedAt.Valid {
-    t := time.UnixMilli(finishedAt.Int64)
-    a.FinishedAt = &t
-  }
-  return &a, nil
+  ))
 }
 
 // AppendLogs appends log entries for an attempt.
