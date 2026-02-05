@@ -38,7 +38,55 @@ var ErrStaleLease = errors.New("stale lease")
 const (
   leaseSkew            = 5 * time.Second
   minHeartbeatInterval = 2 * time.Second
+  defaultTimeout       = 300 * time.Second
+  defaultLeaseExpiry   = 60 * time.Second
+  logBatchSize         = 100
+  logScanBufSize       = 8192
+  logFlushInterval     = 2 * time.Second
 )
+
+// runState holds mutex-protected shared state for a run's lifetime.
+type runState struct {
+  mu              sync.Mutex
+  leaseExpiry     time.Time
+  cancelRequested bool
+  staleLease      bool
+  timedOut        bool
+}
+
+func newRunState(leaseExpiry time.Time) *runState {
+  return &runState{leaseExpiry: leaseExpiry}
+}
+
+func (s *runState) setLeaseExpiry(t time.Time) {
+  s.mu.Lock()
+  s.leaseExpiry = t
+  s.mu.Unlock()
+}
+
+func (s *runState) markCancel() {
+  s.mu.Lock()
+  s.cancelRequested = true
+  s.mu.Unlock()
+}
+
+func (s *runState) markStale() {
+  s.mu.Lock()
+  s.staleLease = true
+  s.mu.Unlock()
+}
+
+func (s *runState) markTimedOut() {
+  s.mu.Lock()
+  s.timedOut = true
+  s.mu.Unlock()
+}
+
+func (s *runState) snapshot() (leaseExpiry time.Time, cancelRequested, staleLease, timedOut bool) {
+  s.mu.Lock()
+  defer s.mu.Unlock()
+  return s.leaseExpiry, s.cancelRequested, s.staleLease, s.timedOut
+}
 
 func loadConfig() (*Config, error) {
   cfg := &Config{
@@ -244,153 +292,125 @@ func (r *Runner) poll(ctx context.Context) error {
   return r.executeRun(ctx, &lease)
 }
 
-func (r *Runner) executeRun(ctx context.Context, lease *LeaseResponse) error {
-  // Create run context that can be cancelled
-  runCtx, cancel := context.WithCancel(ctx)
-  defer cancel()
-
-  // Parse lease expiry
-  leaseExpiry, err := time.Parse(time.RFC3339, lease.LeaseExpiresAt)
-  if err != nil {
-    leaseExpiry = time.Now().Add(60 * time.Second)
-  }
-
-  // Start the run
-  startResp, err := r.startRun(runCtx, lease)
-  if errors.Is(err, ErrStaleLease) {
-    r.logger.Warn("stale lease on start")
-    return nil
-  }
-  if err != nil {
-    r.logger.Error("start failed", "error", err)
-    return err
-  }
-
-  // Update lease expiry from response
-  if t, err := time.Parse(time.RFC3339, startResp.LeaseExpiresAt); err == nil {
-    leaseExpiry = t
-  }
-
-  // Check for cancel
-  if startResp.CancelRequested {
-    r.logger.Info("run cancelled before start")
-    if err := r.submitResult(ctx, lease, "cancelled", nil, nil); errors.Is(err, ErrStaleLease) {
-      r.logger.Warn("stale lease on cancel result")
-      return nil
-    } else if err != nil {
-      return err
-    }
-    return nil
-  }
-
-  var stateMu sync.Mutex
-  cancelRequested := false
-  staleLease := false
-  timedOut := false
-
-  setLeaseExpiry := func(t time.Time) {
-    stateMu.Lock()
-    leaseExpiry = t
-    stateMu.Unlock()
-  }
-  markCancel := func() {
-    stateMu.Lock()
-    cancelRequested = true
-    stateMu.Unlock()
-  }
-  markStale := func() {
-    stateMu.Lock()
-    staleLease = true
-    stateMu.Unlock()
-  }
-  markTimedOut := func() {
-    stateMu.Lock()
-    timedOut = true
-    stateMu.Unlock()
-  }
-  snapshot := func() (time.Time, bool, bool, bool) {
-    stateMu.Lock()
-    defer stateMu.Unlock()
-    return leaseExpiry, cancelRequested, staleLease, timedOut
-  }
-
-  // Create workspace
+// prepareWorkspace creates a temp directory, downloads and unpacks the artifact,
+// creates a venv, and installs requirements. Returns the work directory and a
+// cleanup function. Propagates ErrStaleLease from download; other errors are
+// submitted as user-facing failure messages.
+func (r *Runner) prepareWorkspace(ctx context.Context, lease *LeaseResponse) (string, func(), error) {
   workDir, err := os.MkdirTemp("", fmt.Sprintf("minitower-run-%d-", lease.RunID))
   if err != nil {
-    if err := r.submitResult(ctx, lease, "failed", nil, ptr("failed to create workspace")); errors.Is(err, ErrStaleLease) {
-      r.logger.Warn("stale lease on workspace failure")
-      return nil
-    } else if err != nil {
-      return err
+    if submitErr := r.submitFailure(ctx, lease, "failed to create workspace"); submitErr != nil {
+      return "", nil, submitErr
     }
-    return nil
+    return "", nil, err
   }
-  defer os.RemoveAll(workDir)
+  cleanup := func() { os.RemoveAll(workDir) }
 
-  // Download and verify artifact
-  artifactPath := filepath.Join(workDir, "artifact.tar.gz")
-  sha256Hash, err := r.downloadArtifact(runCtx, lease, artifactPath)
+  sha256Hash, err := r.downloadArtifact(ctx, lease, filepath.Join(workDir, "artifact.tar.gz"))
   if err != nil {
     r.logger.Error("artifact download failed", "error", err)
+    cleanup()
     if errors.Is(err, ErrStaleLease) {
-      r.logger.Warn("stale lease during artifact download")
-      return nil
+      return "", nil, ErrStaleLease
     }
-    if err := r.submitResult(ctx, lease, "failed", nil, ptr("failed to download artifact")); errors.Is(err, ErrStaleLease) {
-      r.logger.Warn("stale lease on artifact failure result")
-      return nil
-    } else if err != nil {
-      return err
+    if submitErr := r.submitFailure(ctx, lease, "failed to download artifact"); submitErr != nil {
+      return "", nil, submitErr
     }
-    return nil
+    return "", nil, err
   }
 
-  // Unpack artifact
-  if err := r.unpackArtifact(artifactPath, workDir); err != nil {
+  if err := r.unpackArtifact(filepath.Join(workDir, "artifact.tar.gz"), workDir); err != nil {
     r.logger.Error("unpack failed", "error", err)
-    if err := r.submitResult(ctx, lease, "failed", nil, ptr("failed to unpack artifact")); errors.Is(err, ErrStaleLease) {
-      r.logger.Warn("stale lease on unpack failure result")
-      return nil
-    } else if err != nil {
-      return err
+    cleanup()
+    if submitErr := r.submitFailure(ctx, lease, "failed to unpack artifact"); submitErr != nil {
+      return "", nil, submitErr
     }
-    return nil
+    return "", nil, err
   }
   r.logger.Info("artifact unpacked", "sha256", sha256Hash)
 
-  // Create venv
   venvPath := filepath.Join(workDir, ".venv")
-  if err := r.createVenv(runCtx, venvPath); err != nil {
+  if err := r.createVenv(ctx, venvPath); err != nil {
     r.logger.Error("venv creation failed", "error", err)
-    if err := r.submitResult(ctx, lease, "failed", nil, ptr("failed to create venv")); errors.Is(err, ErrStaleLease) {
-      r.logger.Warn("stale lease on venv failure result")
-      return nil
-    } else if err != nil {
-      return err
+    cleanup()
+    if submitErr := r.submitFailure(ctx, lease, "failed to create venv"); submitErr != nil {
+      return "", nil, submitErr
     }
-    return nil
+    return "", nil, err
   }
 
-  // Install requirements if present
   reqPath := filepath.Join(workDir, "requirements.txt")
   if _, err := os.Stat(reqPath); err == nil {
-    if err := r.installRequirements(runCtx, venvPath, reqPath); err != nil {
+    if err := r.installRequirements(ctx, venvPath, reqPath); err != nil {
       r.logger.Error("requirements install failed", "error", err)
-      if err := r.submitResult(ctx, lease, "failed", nil, ptr("failed to install requirements")); errors.Is(err, ErrStaleLease) {
-        r.logger.Warn("stale lease on requirements failure result")
-        return nil
-      } else if err != nil {
-        return err
+      cleanup()
+      if submitErr := r.submitFailure(ctx, lease, "failed to install requirements"); submitErr != nil {
+        return "", nil, submitErr
       }
-      return nil
+      return "", nil, err
     }
   }
 
-  // Prepare execution
+  return workDir, cleanup, nil
+}
+
+// runHeartbeat runs the heartbeat loop until the run context is cancelled.
+func (r *Runner) runHeartbeat(runCtx context.Context, lease *LeaseResponse, state *runState, terminate func(string)) {
+  for {
+    expiry, _, _, _ := state.snapshot()
+    interval := minHeartbeatInterval
+    if expiry.After(time.Now()) {
+      remaining := time.Until(expiry.Add(-leaseSkew))
+      if remaining > 0 {
+        interval = remaining / 3
+        if interval < minHeartbeatInterval {
+          interval = minHeartbeatInterval
+        }
+      }
+    }
+    timer := time.NewTimer(interval)
+    select {
+    case <-runCtx.Done():
+      timer.Stop()
+      return
+    case <-timer.C:
+    }
+    resp, err := r.heartbeat(context.Background(), lease)
+    if err != nil {
+      if errors.Is(err, ErrStaleLease) {
+        r.logger.Warn("stale lease on heartbeat")
+        state.markStale()
+        terminate("stale lease")
+        return
+      }
+      r.logger.Error("heartbeat failed", "error", err)
+      expiry, _, _, _ := state.snapshot()
+      if time.Now().After(expiry.Add(-leaseSkew)) {
+        r.logger.Warn("lease expired, self-fencing")
+        state.markStale()
+        terminate("lease expired")
+        return
+      }
+      continue
+    }
+    if t, err := time.Parse(time.RFC3339, resp.LeaseExpiresAt); err == nil {
+      state.setLeaseExpiry(t)
+    }
+    if resp.CancelRequested {
+      state.markCancel()
+      terminate("cancel requested")
+      return
+    }
+  }
+}
+
+// runProcess sets up and runs the user process, streams logs, and submits the final result.
+func (r *Runner) runProcess(ctx context.Context, runCtx context.Context, cancel context.CancelFunc, lease *LeaseResponse, state *runState, workDir string) error {
+  venvPath := filepath.Join(workDir, ".venv")
   pythonBin := filepath.Join(venvPath, "bin", "python")
   entrypoint := filepath.Join(workDir, lease.Entrypoint)
 
-  timeout := 300 * time.Second
+  timeout := defaultTimeout
   if lease.TimeoutSeconds != nil {
     timeout = time.Duration(*lease.TimeoutSeconds) * time.Second
   }
@@ -398,7 +418,6 @@ func (r *Runner) executeRun(ctx context.Context, lease *LeaseResponse) error {
   cmd := exec.Command(pythonBin, entrypoint)
   cmd.Dir = workDir
 
-  // Set input as environment variable
   if lease.Input != nil {
     inputJSON, _ := json.Marshal(lease.Input)
     cmd.Env = append(os.Environ(), "MINITOWER_INPUT="+string(inputJSON))
@@ -434,70 +453,19 @@ func (r *Runner) executeRun(ctx context.Context, lease *LeaseResponse) error {
   heartbeatDone := make(chan struct{})
   go func() {
     defer close(heartbeatDone)
-    for {
-      expiry, _, _, _ := snapshot()
-      interval := minHeartbeatInterval
-      if expiry.After(time.Now()) {
-        remaining := time.Until(expiry.Add(-leaseSkew))
-        if remaining > 0 {
-          interval = remaining / 3
-          if interval < minHeartbeatInterval {
-            interval = minHeartbeatInterval
-          }
-        }
-      }
-      timer := time.NewTimer(interval)
-      select {
-      case <-runCtx.Done():
-        timer.Stop()
-        return
-      case <-timer.C:
-      }
-      resp, err := r.heartbeat(context.Background(), lease)
-      if err != nil {
-        if errors.Is(err, ErrStaleLease) {
-          r.logger.Warn("stale lease on heartbeat")
-          markStale()
-          terminate("stale lease")
-          return
-        }
-        r.logger.Error("heartbeat failed", "error", err)
-        // Self-fence
-        expiry, _, _, _ := snapshot()
-        if time.Now().After(expiry.Add(-leaseSkew)) {
-          r.logger.Warn("lease expired, self-fencing")
-          markStale()
-          terminate("lease expired")
-          return
-        }
-        continue
-      }
-      if t, err := time.Parse(time.RFC3339, resp.LeaseExpiresAt); err == nil {
-        setLeaseExpiry(t)
-      }
-      if resp.CancelRequested {
-        markCancel()
-        terminate("cancel requested")
-        return
-      }
-    }
+    r.runHeartbeat(runCtx, lease, state, terminate)
   }()
 
   if runCtx.Err() != nil {
     <-heartbeatDone
-    _, wasCancelled, isStale, _ := snapshot()
+    _, wasCancelled, isStale, _ := state.snapshot()
     if isStale {
       r.logger.Warn("stale lease before process start")
       return nil
     }
     if wasCancelled {
       r.logger.Info("run cancelled before process start")
-      if err := r.submitResult(ctx, lease, "cancelled", nil, nil); errors.Is(err, ErrStaleLease) {
-        r.logger.Warn("stale lease on cancel result")
-        return nil
-      } else if err != nil {
-        return err
-      }
+      return r.submitResultSafe(ctx, lease, "cancelled", nil, nil)
     }
     return nil
   }
@@ -506,15 +474,10 @@ func (r *Runner) executeRun(ctx context.Context, lease *LeaseResponse) error {
     cancel()
     <-heartbeatDone
     r.logger.Error("process start failed", "error", err)
-    if err := r.submitResult(ctx, lease, "failed", nil, ptr("failed to start process")); errors.Is(err, ErrStaleLease) {
-      r.logger.Warn("stale lease on process start failure result")
-      return nil
-    } else if err != nil {
-      return err
-    }
-    return nil
+    return r.submitFailure(ctx, lease, "failed to start process")
   }
 
+  // Timeout watcher
   timeoutDone := make(chan struct{})
   go func() {
     defer close(timeoutDone)
@@ -524,93 +487,33 @@ func (r *Runner) executeRun(ctx context.Context, lease *LeaseResponse) error {
     case <-runCtx.Done():
       return
     case <-timer.C:
-      markTimedOut()
+      state.markTimedOut()
       terminate("timeout")
     }
   }()
 
   // Stream logs
-  var logsMu sync.Mutex
-  var logs []logEntry
-  var seq int64
+  lc := newLogCollector(r, lease, state, terminate)
 
-  collectLogs := func(reader io.Reader, stream string) {
-    scanner := bufio.NewScanner(reader)
-    scanner.Buffer(make([]byte, 8192), 8192)
-    for scanner.Scan() {
-      logsMu.Lock()
-      seq++
-      logs = append(logs, logEntry{
-        Seq:      seq,
-        Stream:   stream,
-        Line:     scanner.Text(),
-        LoggedAt: time.Now().Format(time.RFC3339),
-      })
-      // Flush logs if batch is full
-      if len(logs) >= 100 {
-        toFlush := logs
-        logs = nil
-        logsMu.Unlock()
-        if err := r.flushLogs(runCtx, lease, toFlush); err != nil {
-          if errors.Is(err, ErrStaleLease) {
-            r.logger.Warn("stale lease on log flush")
-            markStale()
-            terminate("stale lease")
-            return
-          }
-          r.logger.Warn("log flush failed", "error", err)
-        }
-      } else {
-        logsMu.Unlock()
-      }
-    }
-  }
-
-  // Periodic log flusher - flush every 2 seconds
   logFlushDone := make(chan struct{})
   go func() {
     defer close(logFlushDone)
-    ticker := time.NewTicker(2 * time.Second)
-    defer ticker.Stop()
-    for {
-      select {
-      case <-runCtx.Done():
-        return
-      case <-ticker.C:
-        logsMu.Lock()
-        if len(logs) > 0 {
-          toFlush := logs
-          logs = nil
-          logsMu.Unlock()
-          if err := r.flushLogs(runCtx, lease, toFlush); err != nil {
-            if errors.Is(err, ErrStaleLease) {
-              r.logger.Warn("stale lease on log flush")
-              markStale()
-              terminate("stale lease")
-              return
-            }
-            r.logger.Warn("log flush failed", "error", err)
-          }
-        } else {
-          logsMu.Unlock()
-        }
-      }
-    }
+    lc.periodicFlush(runCtx)
   }()
 
   var wg sync.WaitGroup
   wg.Add(2)
   go func() {
     defer wg.Done()
-    collectLogs(stdout, "stdout")
+    lc.collect(runCtx, stdout, "stdout")
   }()
   go func() {
     defer wg.Done()
-    collectLogs(stderr, "stderr")
+    lc.collect(runCtx, stderr, "stderr")
   }()
 
   // Wait for process
-  err = cmd.Wait()
+  waitErr := cmd.Wait()
   close(processDone)
   wg.Wait()
   cancel()
@@ -618,62 +521,58 @@ func (r *Runner) executeRun(ctx context.Context, lease *LeaseResponse) error {
   <-logFlushDone
   <-timeoutDone
 
-  // Flush remaining logs
-  _, _, isStale, _ := snapshot()
-  if !isStale {
-    logsMu.Lock()
-    if len(logs) > 0 {
-      if err := r.flushLogs(context.Background(), lease, logs); err != nil {
-        if errors.Is(err, ErrStaleLease) {
-          r.logger.Warn("stale lease on final log flush")
-          markStale()
-        } else {
-          r.logger.Warn("final log flush failed", "error", err)
-        }
-      }
-    }
-    logsMu.Unlock()
-  }
+  lc.flushRemaining()
 
-  // Determine result
-  _, wasCancelled, isStale, wasTimedOut := snapshot()
-  if isStale {
-    r.logger.Warn("stale lease, skipping result")
-    return nil
-  }
+  return r.submitFinalResult(ctx, lease, state, waitErr)
+}
 
-  submit := func(status string, exitCode *int, errorMessage *string) error {
-    if err := r.submitResult(ctx, lease, status, exitCode, errorMessage); errors.Is(err, ErrStaleLease) {
-      r.logger.Warn("stale lease on result submit")
-      return nil
-    } else if err != nil {
-      return err
-    }
-    return nil
-  }
+func (r *Runner) executeRun(ctx context.Context, lease *LeaseResponse) error {
+  runCtx, cancel := context.WithCancel(ctx)
+  defer cancel()
 
-  if wasCancelled {
-    r.logger.Info("run cancelled")
-    return submit("cancelled", nil, nil)
-  }
-
-  if wasTimedOut {
-    r.logger.Info("run timed out")
-    return submit("failed", nil, ptr("timeout"))
-  }
-
+  // Parse lease expiry
+  leaseExpiry, err := time.Parse(time.RFC3339, lease.LeaseExpiresAt)
   if err != nil {
-    exitCode := 1
-    if exitErr, ok := err.(*exec.ExitError); ok {
-      exitCode = exitErr.ExitCode()
-    }
-    r.logger.Info("run failed", "exit_code", exitCode)
-    return submit("failed", &exitCode, ptr(err.Error()))
+    leaseExpiry = time.Now().Add(defaultLeaseExpiry)
   }
 
-  exitCode := 0
-  r.logger.Info("run completed", "exit_code", exitCode)
-  return submit("completed", &exitCode, nil)
+  // Start the run
+  startResp, err := r.startRun(runCtx, lease)
+  if errors.Is(err, ErrStaleLease) {
+    r.logger.Warn("stale lease on start")
+    return nil
+  }
+  if err != nil {
+    r.logger.Error("start failed", "error", err)
+    return err
+  }
+
+  // Update lease expiry from response
+  if t, err := time.Parse(time.RFC3339, startResp.LeaseExpiresAt); err == nil {
+    leaseExpiry = t
+  }
+
+  // Check for early cancel
+  if startResp.CancelRequested {
+    r.logger.Info("run cancelled before start")
+    return r.submitResultSafe(ctx, lease, "cancelled", nil, nil)
+  }
+
+  state := newRunState(leaseExpiry)
+
+  // Prepare workspace
+  workDir, cleanup, err := r.prepareWorkspace(runCtx, lease)
+  if err != nil {
+    if errors.Is(err, ErrStaleLease) {
+      r.logger.Warn("stale lease during workspace preparation")
+      return nil
+    }
+    // submitFailure already called inside prepareWorkspace
+    return nil
+  }
+  defer cleanup()
+
+  return r.runProcess(ctx, runCtx, cancel, lease, state, workDir)
 }
 
 type AttemptResponse struct {
@@ -805,6 +704,119 @@ type logEntry struct {
   LoggedAt string `json:"logged_at"`
 }
 
+// logCollector buffers log lines and flushes them in batches.
+type logCollector struct {
+  r     *Runner
+  lease *LeaseResponse
+  state *runState
+
+  mu   sync.Mutex
+  logs []logEntry
+  seq  int64
+
+  terminate func(string)
+}
+
+func newLogCollector(r *Runner, lease *LeaseResponse, state *runState, terminate func(string)) *logCollector {
+  return &logCollector{
+    r:         r,
+    lease:     lease,
+    state:     state,
+    terminate: terminate,
+  }
+}
+
+// collect reads lines from reader and appends them to the log buffer, flushing when the batch is full.
+func (lc *logCollector) collect(ctx context.Context, reader io.Reader, stream string) {
+  scanner := bufio.NewScanner(reader)
+  scanner.Buffer(make([]byte, logScanBufSize), logScanBufSize)
+  for scanner.Scan() {
+    lc.mu.Lock()
+    lc.seq++
+    lc.logs = append(lc.logs, logEntry{
+      Seq:      lc.seq,
+      Stream:   stream,
+      Line:     scanner.Text(),
+      LoggedAt: time.Now().Format(time.RFC3339),
+    })
+    if len(lc.logs) >= logBatchSize {
+      toFlush := lc.logs
+      lc.logs = nil
+      lc.mu.Unlock()
+      if err := lc.r.flushLogs(ctx, lc.lease, toFlush); err != nil {
+        if errors.Is(err, ErrStaleLease) {
+          lc.r.logger.Warn("stale lease on log flush")
+          lc.state.markStale()
+          lc.terminate("stale lease")
+          return
+        }
+        lc.r.logger.Warn("log flush failed", "error", err)
+      }
+    } else {
+      lc.mu.Unlock()
+    }
+  }
+}
+
+// periodicFlush flushes buffered logs at regular intervals until ctx is cancelled.
+func (lc *logCollector) periodicFlush(ctx context.Context) {
+  ticker := time.NewTicker(logFlushInterval)
+  defer ticker.Stop()
+  for {
+    select {
+    case <-ctx.Done():
+      return
+    case <-ticker.C:
+      lc.flush(ctx)
+    }
+  }
+}
+
+// flush sends any buffered logs to the server.
+func (lc *logCollector) flush(ctx context.Context) {
+  lc.mu.Lock()
+  if len(lc.logs) == 0 {
+    lc.mu.Unlock()
+    return
+  }
+  toFlush := lc.logs
+  lc.logs = nil
+  lc.mu.Unlock()
+  if err := lc.r.flushLogs(ctx, lc.lease, toFlush); err != nil {
+    if errors.Is(err, ErrStaleLease) {
+      lc.r.logger.Warn("stale lease on log flush")
+      lc.state.markStale()
+      lc.terminate("stale lease")
+      return
+    }
+    lc.r.logger.Warn("log flush failed", "error", err)
+  }
+}
+
+// flushRemaining sends any remaining buffered logs using a background context.
+func (lc *logCollector) flushRemaining() {
+  _, _, isStale, _ := lc.state.snapshot()
+  if isStale {
+    return
+  }
+  lc.mu.Lock()
+  if len(lc.logs) == 0 {
+    lc.mu.Unlock()
+    return
+  }
+  remaining := lc.logs
+  lc.logs = nil
+  lc.mu.Unlock()
+  if err := lc.r.flushLogs(context.Background(), lc.lease, remaining); err != nil {
+    if errors.Is(err, ErrStaleLease) {
+      lc.r.logger.Warn("stale lease on final log flush")
+      lc.state.markStale()
+    } else {
+      lc.r.logger.Warn("final log flush failed", "error", err)
+    }
+  }
+}
+
 func (r *Runner) flushLogs(ctx context.Context, lease *LeaseResponse, logs []logEntry) error {
   body, _ := json.Marshal(map[string]any{"logs": logs})
   req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("%s/api/v1/runs/%d/logs", r.cfg.ServerURL, lease.RunID), bytes.NewReader(body))
@@ -865,6 +877,54 @@ func (r *Runner) submitResult(ctx context.Context, lease *LeaseResponse, status 
   }
 
   return nil
+}
+
+// submitResultSafe wraps submitResult and silently returns nil on stale lease.
+func (r *Runner) submitResultSafe(ctx context.Context, lease *LeaseResponse, status string, exitCode *int, errorMessage *string) error {
+  if err := r.submitResult(ctx, lease, status, exitCode, errorMessage); errors.Is(err, ErrStaleLease) {
+    r.logger.Warn("stale lease on result submit")
+    return nil
+  } else if err != nil {
+    return err
+  }
+  return nil
+}
+
+// submitFailure is a convenience for submitting a failed status with an error message.
+func (r *Runner) submitFailure(ctx context.Context, lease *LeaseResponse, errMsg string) error {
+  return r.submitResultSafe(ctx, lease, "failed", nil, ptr(errMsg))
+}
+
+// submitFinalResult determines the final status from the run state and wait error, then submits.
+func (r *Runner) submitFinalResult(ctx context.Context, lease *LeaseResponse, state *runState, waitErr error) error {
+  _, wasCancelled, isStale, wasTimedOut := state.snapshot()
+  if isStale {
+    r.logger.Warn("stale lease, skipping result")
+    return nil
+  }
+
+  if wasCancelled {
+    r.logger.Info("run cancelled")
+    return r.submitResultSafe(ctx, lease, "cancelled", nil, nil)
+  }
+
+  if wasTimedOut {
+    r.logger.Info("run timed out")
+    return r.submitResultSafe(ctx, lease, "failed", nil, ptr("timeout"))
+  }
+
+  if waitErr != nil {
+    exitCode := 1
+    if exitErr, ok := waitErr.(*exec.ExitError); ok {
+      exitCode = exitErr.ExitCode()
+    }
+    r.logger.Info("run failed", "exit_code", exitCode)
+    return r.submitResultSafe(ctx, lease, "failed", &exitCode, ptr(waitErr.Error()))
+  }
+
+  exitCode := 0
+  r.logger.Info("run completed", "exit_code", exitCode)
+  return r.submitResultSafe(ctx, lease, "completed", &exitCode, nil)
 }
 
 func isStaleLeaseStatus(status int) bool {
