@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -81,8 +83,12 @@ func (h *Handlers) CreateRun(w http.ResponseWriter, r *http.Request) {
 
 	var req createRunRequest
 	if err := decodeJSON(r, &req); err != nil {
-		// Empty body is OK
-		req = createRunRequest{}
+		if errors.Is(err, io.EOF) {
+			req = createRunRequest{}
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid_request", "malformed JSON body")
+			return
+		}
 	}
 
 	// Get version to run

@@ -20,24 +20,7 @@ type AppVersion struct {
 	CreatedAt         time.Time
 }
 
-// GetNextVersionNumber returns the next version number for an app.
-func (s *Store) GetNextVersionNumber(ctx context.Context, appID int64) (int64, error) {
-	var maxVersion sql.NullInt64
-	err := s.db.QueryRowContext(ctx,
-		`SELECT MAX(version_no) FROM app_versions WHERE app_id = ?`,
-		appID,
-	).Scan(&maxVersion)
-	if err != nil {
-		return 0, err
-	}
-
-	if maxVersion.Valid {
-		return maxVersion.Int64 + 1, nil
-	}
-	return 1, nil
-}
-
-// CreateVersion creates a new app version.
+// CreateVersion creates a new app version with an atomically assigned version number.
 func (s *Store) CreateVersion(ctx context.Context, appID int64, artifactKey, artifactSHA256, entrypoint string, timeoutSeconds *int, paramsSchema map[string]any) (*AppVersion, error) {
 	now := time.Now().UnixMilli()
 
@@ -51,21 +34,27 @@ func (s *Store) CreateVersion(ctx context.Context, appID int64, artifactKey, art
 		paramsSchemaJSON = &str
 	}
 
-	versionNo, err := s.GetNextVersionNumber(ctx, appID)
-	if err != nil {
-		return nil, err
-	}
-
+	// Atomic INSERT ... SELECT computes and inserts the version number in one statement,
+	// preventing race conditions between concurrent uploads for the same app.
 	result, err := s.db.ExecContext(ctx,
 		`INSERT INTO app_versions (app_id, version_no, artifact_object_key, artifact_sha256, entrypoint, timeout_seconds, params_schema_json, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		appID, versionNo, artifactKey, artifactSHA256, entrypoint, timeoutSeconds, paramsSchemaJSON, now,
+     VALUES (?, COALESCE((SELECT MAX(version_no) FROM app_versions WHERE app_id = ?), 0) + 1, ?, ?, ?, ?, ?, ?)`,
+		appID, appID, artifactKey, artifactSHA256, entrypoint, timeoutSeconds, paramsSchemaJSON, now,
 	)
 	if err != nil {
 		return nil, err
 	}
 
 	id, err := result.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+
+	// Read back the assigned version number.
+	var versionNo int64
+	err = s.db.QueryRowContext(ctx,
+		`SELECT version_no FROM app_versions WHERE id = ?`, id,
+	).Scan(&versionNo)
 	if err != nil {
 		return nil, err
 	}

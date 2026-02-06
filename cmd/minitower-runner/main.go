@@ -405,7 +405,8 @@ func (r *Runner) runHeartbeat(runCtx context.Context, lease *LeaseResponse, stat
 }
 
 // runProcess sets up and runs the user process, streams logs, and submits the final result.
-func (r *Runner) runProcess(ctx context.Context, runCtx context.Context, cancel context.CancelFunc, lease *LeaseResponse, state *runState, workDir string) error {
+// The heartbeat goroutine is already running; heartbeatDone closes when it exits.
+func (r *Runner) runProcess(ctx context.Context, runCtx context.Context, cancel context.CancelFunc, lease *LeaseResponse, state *runState, workDir string, heartbeatDone <-chan struct{}, baseTerminate func(string)) error {
 	venvPath := filepath.Join(workDir, ".venv")
 	pythonBin := filepath.Join(venvPath, "bin", "python")
 	entrypoint := filepath.Join(workDir, lease.Entrypoint)
@@ -427,11 +428,11 @@ func (r *Runner) runProcess(ctx context.Context, runCtx context.Context, cancel 
 	stderr, _ := cmd.StderrPipe()
 
 	processDone := make(chan struct{})
-	var terminateOnce sync.Once
+	// Wrap baseTerminate to also signal the process.
+	var killOnce sync.Once
 	terminate := func(reason string) {
-		terminateOnce.Do(func() {
-			r.logger.Warn("terminating run", "reason", reason)
-			cancel()
+		baseTerminate(reason)
+		killOnce.Do(func() {
 			if cmd.Process == nil {
 				return
 			}
@@ -448,13 +449,6 @@ func (r *Runner) runProcess(ctx context.Context, runCtx context.Context, cancel 
 			}()
 		})
 	}
-
-	// Start heartbeat
-	heartbeatDone := make(chan struct{})
-	go func() {
-		defer close(heartbeatDone)
-		r.runHeartbeat(runCtx, lease, state, terminate)
-	}()
 
 	if runCtx.Err() != nil {
 		<-heartbeatDone
@@ -560,9 +554,25 @@ func (r *Runner) executeRun(ctx context.Context, lease *LeaseResponse) error {
 
 	state := newRunState(leaseExpiry)
 
+	// Start heartbeat immediately so the lease stays alive during workspace prep.
+	heartbeatDone := make(chan struct{})
+	var terminateOnce sync.Once
+	terminate := func(reason string) {
+		terminateOnce.Do(func() {
+			r.logger.Warn("terminating run", "reason", reason)
+			cancel()
+		})
+	}
+	go func() {
+		defer close(heartbeatDone)
+		r.runHeartbeat(runCtx, lease, state, terminate)
+	}()
+
 	// Prepare workspace
 	workDir, cleanup, err := r.prepareWorkspace(runCtx, lease)
 	if err != nil {
+		cancel()
+		<-heartbeatDone
 		if errors.Is(err, ErrStaleLease) {
 			r.logger.Warn("stale lease during workspace preparation")
 			return nil
@@ -572,7 +582,7 @@ func (r *Runner) executeRun(ctx context.Context, lease *LeaseResponse) error {
 	}
 	defer cleanup()
 
-	return r.runProcess(ctx, runCtx, cancel, lease, state, workDir)
+	return r.runProcess(ctx, runCtx, cancel, lease, state, workDir, heartbeatDone, terminate)
 }
 
 type AttemptResponse struct {

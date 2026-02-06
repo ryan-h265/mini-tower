@@ -111,81 +111,116 @@ func (s *Server) routeApps(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) routeAppsWithSlug(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
+	const prefix = "/api/v1/apps/"
+	rest := strings.TrimPrefix(r.URL.Path, prefix)
+	segs := strings.Split(strings.TrimSuffix(rest, "/"), "/")
 
-	// /api/v1/apps/{app}/versions
-	if strings.HasSuffix(path, "/versions") {
-		switch r.Method {
-		case http.MethodGet:
-			s.handlers.ListVersions(w, r)
-		case http.MethodPost:
-			s.handlers.CreateVersion(w, r)
+	switch len(segs) {
+	case 2:
+		// /api/v1/apps/{app}/{sub}
+		switch segs[1] {
+		case "versions":
+			switch r.Method {
+			case http.MethodGet:
+				s.handlers.ListVersions(w, r)
+			case http.MethodPost:
+				s.handlers.CreateVersion(w, r)
+			default:
+				w.WriteHeader(http.StatusMethodNotAllowed)
+			}
+		case "runs":
+			switch r.Method {
+			case http.MethodGet:
+				s.handlers.ListRuns(w, r)
+			case http.MethodPost:
+				s.handlers.CreateRun(w, r)
+			default:
+				w.WriteHeader(http.StatusMethodNotAllowed)
+			}
 		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
+			http.NotFound(w, r)
 		}
-		return
+	case 1:
+		// /api/v1/apps/{app}
+		s.handlers.GetApp(w, r)
+	default:
+		http.NotFound(w, r)
 	}
+}
 
-	// /api/v1/apps/{app}/runs
-	if strings.HasSuffix(path, "/runs") {
-		switch r.Method {
-		case http.MethodGet:
-			s.handlers.ListRuns(w, r)
-		case http.MethodPost:
-			s.handlers.CreateRun(w, r)
-		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
-		}
-		return
+// runPathSegments returns the path segments after "/api/v1/runs/".
+// For /api/v1/runs/123/start it returns ["123", "start"].
+func runPathSegments(path string) []string {
+	const prefix = "/api/v1/runs/"
+	rest := strings.TrimPrefix(path, prefix)
+	if rest == "" {
+		return nil
 	}
-
-	// /api/v1/apps/{app}
-	s.handlers.GetApp(w, r)
+	return strings.Split(strings.TrimSuffix(rest, "/"), "/")
 }
 
 // routeRunsMixed handles /api/v1/runs/* with mixed auth based on method and path.
 // Team auth: GET /runs/{run}, GET /runs/{run}/logs
 // Runner auth: POST /runs/{run}/start, POST /runs/{run}/heartbeat, POST /runs/{run}/logs, POST /runs/{run}/result, GET /runs/{run}/artifact
 func (s *Server) routeRunsMixed(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
+	segs := runPathSegments(r.URL.Path)
 
-	// Runner endpoints (POST or artifact GET)
-	if strings.HasSuffix(path, "/start") && r.Method == http.MethodPost {
-		s.auth.RequireRunner(http.HandlerFunc(s.handlers.StartRun)).ServeHTTP(w, r)
-		return
-	}
-	if strings.HasSuffix(path, "/heartbeat") && r.Method == http.MethodPost {
-		s.auth.RequireRunner(http.HandlerFunc(s.handlers.HeartbeatRun)).ServeHTTP(w, r)
-		return
-	}
-	if strings.HasSuffix(path, "/logs") && r.Method == http.MethodPost {
-		s.auth.RequireRunner(http.HandlerFunc(s.handlers.SubmitLogs)).ServeHTTP(w, r)
-		return
-	}
-	if strings.HasSuffix(path, "/result") && r.Method == http.MethodPost {
-		s.auth.RequireRunner(http.HandlerFunc(s.handlers.SubmitResult)).ServeHTTP(w, r)
-		return
-	}
-	if strings.HasSuffix(path, "/artifact") && r.Method == http.MethodGet {
-		s.auth.RequireRunner(http.HandlerFunc(s.handlers.GetArtifact)).ServeHTTP(w, r)
-		return
-	}
+	// Expect exactly /runs/{id} (1 segment) or /runs/{id}/{action} (2 segments).
+	switch len(segs) {
+	case 2:
+		// /runs/{id}/{action}
+		switch segs[1] {
+		case "start":
+			if r.Method == http.MethodPost {
+				s.auth.RequireRunner(http.HandlerFunc(s.handlers.StartRun)).ServeHTTP(w, r)
+				return
+			}
+		case "heartbeat":
+			if r.Method == http.MethodPost {
+				s.auth.RequireRunner(http.HandlerFunc(s.handlers.HeartbeatRun)).ServeHTTP(w, r)
+				return
+			}
+		case "logs":
+			if r.Method == http.MethodPost {
+				s.auth.RequireRunner(http.HandlerFunc(s.handlers.SubmitLogs)).ServeHTTP(w, r)
+				return
+			}
+			if r.Method == http.MethodGet {
+				s.auth.RequireTeam(http.HandlerFunc(s.handlers.GetRunLogs)).ServeHTTP(w, r)
+				return
+			}
+		case "result":
+			if r.Method == http.MethodPost {
+				s.auth.RequireRunner(http.HandlerFunc(s.handlers.SubmitResult)).ServeHTTP(w, r)
+				return
+			}
+		case "artifact":
+			if r.Method == http.MethodGet {
+				s.auth.RequireRunner(http.HandlerFunc(s.handlers.GetArtifact)).ServeHTTP(w, r)
+				return
+			}
+		case "cancel":
+			if r.Method == http.MethodPost {
+				s.auth.RequireTeam(http.HandlerFunc(s.handlers.CancelRun)).ServeHTTP(w, r)
+				return
+			}
+		default:
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusMethodNotAllowed)
 
-	// Team endpoints (GET)
-	if strings.HasSuffix(path, "/cancel") && r.Method == http.MethodPost {
-		s.auth.RequireTeam(http.HandlerFunc(s.handlers.CancelRun)).ServeHTTP(w, r)
-		return
-	}
-	if strings.HasSuffix(path, "/logs") && r.Method == http.MethodGet {
-		s.auth.RequireTeam(http.HandlerFunc(s.handlers.GetRunLogs)).ServeHTTP(w, r)
-		return
-	}
-	if r.Method == http.MethodGet {
-		s.auth.RequireTeam(http.HandlerFunc(s.handlers.GetRun)).ServeHTTP(w, r)
-		return
-	}
+	case 1:
+		// /runs/{id}
+		if r.Method == http.MethodGet {
+			s.auth.RequireTeam(http.HandlerFunc(s.handlers.GetRun)).ServeHTTP(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusMethodNotAllowed)
 
-	w.WriteHeader(http.StatusMethodNotAllowed)
+	default:
+		http.NotFound(w, r)
+	}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

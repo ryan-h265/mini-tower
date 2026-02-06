@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"errors"
+	"io"
 	"net/http"
 
 	"minitower/internal/auth"
@@ -31,8 +33,12 @@ func (h *Handlers) CreateToken(w http.ResponseWriter, r *http.Request) {
 
 	var req createTokenRequest
 	if err := decodeJSON(r, &req); err != nil {
-		// Empty body is OK, name is optional
-		req = createTokenRequest{}
+		if errors.Is(err, io.EOF) {
+			req = createTokenRequest{}
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid_request", "malformed JSON body")
+			return
+		}
 	}
 
 	// Generate team token
