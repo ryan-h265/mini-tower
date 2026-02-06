@@ -27,6 +27,7 @@ type Config struct {
 	ServerURL         string
 	RunnerName        string
 	RegistrationToken string
+	Environment       string
 	DataDir           string
 	PythonBin         string
 	PollInterval      time.Duration
@@ -106,7 +107,12 @@ func loadConfig() (*Config, error) {
 		return nil, errors.New("MINITOWER_RUNNER_NAME is required")
 	}
 
-	cfg.RegistrationToken = os.Getenv("MINITOWER_REGISTRATION_TOKEN")
+	cfg.RegistrationToken = os.Getenv("MINITOWER_RUNNER_REGISTRATION_TOKEN")
+
+	cfg.Environment = os.Getenv("MINITOWER_RUNNER_ENVIRONMENT")
+	if cfg.Environment == "" {
+		cfg.Environment = "default"
+	}
 
 	if cfg.DataDir == "" {
 		home, _ := os.UserHomeDir()
@@ -165,7 +171,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Register if no token
 	if r.token == "" {
 		if r.cfg.RegistrationToken == "" {
-			return errors.New("no saved token and MINITOWER_REGISTRATION_TOKEN not set")
+			return errors.New("no saved token and MINITOWER_RUNNER_REGISTRATION_TOKEN not set")
 		}
 		if err := r.register(ctx); err != nil {
 			return fmt.Errorf("register: %w", err)
@@ -201,7 +207,7 @@ func (r *Runner) Run(ctx context.Context) error {
 }
 
 func (r *Runner) register(ctx context.Context) error {
-	body, _ := json.Marshal(map[string]string{"name": r.cfg.RunnerName})
+	body, _ := json.Marshal(map[string]string{"name": r.cfg.RunnerName, "environment": r.cfg.Environment})
 	req, err := http.NewRequestWithContext(ctx, "POST", r.cfg.ServerURL+"/api/v1/runners/register", bytes.NewReader(body))
 	if err != nil {
 		return err

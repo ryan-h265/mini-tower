@@ -11,9 +11,8 @@ const tokenBytes = 32
 
 // Token prefixes for identification.
 const (
-	PrefixTeamToken         = "mtk_"
-	PrefixRunnerToken       = "mtr_"
-	PrefixRegistrationToken = "mtreg_"
+	PrefixTeamToken   = "mtk_"
+	PrefixRunnerToken = "mtr_"
 )
 
 // GenerateToken returns a new random token and its SHA-256 hash.

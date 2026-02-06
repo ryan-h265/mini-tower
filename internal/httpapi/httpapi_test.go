@@ -65,7 +65,7 @@ func TestRunnerEndpointsRejectStaleLeaseToken(t *testing.T) {
 	version := testutil.CreateVersion(t, s, app.ID)
 	run := testutil.CreateRun(t, s, team.ID, app.ID, env.ID, version.ID, 0, 0)
 
-	runner, runnerToken := testutil.CreateRunner(t, s, team.ID, env.ID, "runner-1")
+	runner, runnerToken := testutil.CreateRunner(t, s, "runner-1", "default")
 	leaseToken, leaseHash, _ := auth.GenerateToken()
 	if _, _, err := s.LeaseRun(ctx, runner, leaseHash, time.Minute); err != nil {
 		t.Fatalf("lease run: %v", err)
@@ -121,7 +121,7 @@ func TestRunnerStartHeartbeatResponsesIncludeLeaseFields(t *testing.T) {
 	version := testutil.CreateVersion(t, s, app.ID)
 	run := testutil.CreateRun(t, s, team.ID, app.ID, env.ID, version.ID, 0, 0)
 
-	runner, runnerToken := testutil.CreateRunner(t, s, team.ID, env.ID, "runner-fields")
+	runner, runnerToken := testutil.CreateRunner(t, s, "runner-fields", "default")
 	leaseToken, leaseHash, _ := auth.GenerateToken()
 	if _, _, err := s.LeaseRun(ctx, runner, leaseHash, time.Minute); err != nil {
 		t.Fatalf("lease run: %v", err)
@@ -194,7 +194,7 @@ func TestCancelPropagationToRunnerHeartbeat(t *testing.T) {
 	version := testutil.CreateVersion(t, s, app.ID)
 	run := testutil.CreateRun(t, s, team.ID, app.ID, env.ID, version.ID, 0, 0)
 
-	runner, runnerToken := testutil.CreateRunner(t, s, team.ID, env.ID, "runner-cancel-prop")
+	runner, runnerToken := testutil.CreateRunner(t, s, "runner-cancel-prop", "default")
 	leaseToken, leaseHash, _ := auth.GenerateToken()
 	if _, _, err := s.LeaseRun(ctx, runner, leaseHash, time.Minute); err != nil {
 		t.Fatalf("lease run: %v", err)
@@ -228,7 +228,7 @@ func TestCancelResultRace(t *testing.T) {
 	version := testutil.CreateVersion(t, s, app.ID)
 	run := testutil.CreateRun(t, s, team.ID, app.ID, env.ID, version.ID, 0, 0)
 
-	runner, runnerToken := testutil.CreateRunner(t, s, team.ID, env.ID, "runner-cancel-race")
+	runner, runnerToken := testutil.CreateRunner(t, s, "runner-cancel-race", "default")
 	leaseToken, leaseHash, _ := auth.GenerateToken()
 	if _, _, err := s.LeaseRun(ctx, runner, leaseHash, time.Minute); err != nil {
 		t.Fatalf("lease run: %v", err)
@@ -293,7 +293,7 @@ func TestLateResultAfterExpiryReturnsGone(t *testing.T) {
 	version := testutil.CreateVersion(t, s, app.ID)
 	run := testutil.CreateRun(t, s, team.ID, app.ID, env.ID, version.ID, 0, 0)
 
-	runner, runnerToken := testutil.CreateRunner(t, s, team.ID, env.ID, "runner-expiry-gone")
+	runner, runnerToken := testutil.CreateRunner(t, s, "runner-expiry-gone", "default")
 	leaseToken, leaseHash, _ := auth.GenerateToken()
 	_, attempt, err := s.LeaseRun(ctx, runner, leaseHash, time.Minute)
 	if err != nil {
@@ -332,14 +332,15 @@ func newTestServer(t *testing.T) (http.Handler, *store.Store, *sql.DB, func()) {
 	}
 
 	cfg := config.Config{
-		ListenAddr:          ":0",
-		DBPath:              "",
-		ObjectsDir:          "",
-		BootstrapToken:      "test",
-		LeaseTTL:            60 * time.Second,
-		ExpiryCheckInterval: 10 * time.Second,
-		MaxRequestBodySize:  10 * 1024 * 1024,
-		MaxArtifactSize:     100 * 1024 * 1024,
+		ListenAddr:              ":0",
+		DBPath:                  "",
+		ObjectsDir:              "",
+		BootstrapToken:          "test",
+		RunnerRegistrationToken: "test-runner-reg",
+		LeaseTTL:                60 * time.Second,
+		ExpiryCheckInterval:     10 * time.Second,
+		MaxRequestBodySize:      10 * 1024 * 1024,
+		MaxArtifactSize:         100 * 1024 * 1024,
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

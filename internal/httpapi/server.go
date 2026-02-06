@@ -84,8 +84,8 @@ func (s *Server) routes() {
 	// Bootstrap (bootstrap token auth)
 	s.mux.Handle("/api/v1/bootstrap/team", s.auth.RequireBootstrap(http.HandlerFunc(s.handlers.BootstrapTeam)))
 
-	// Runner registration (registration token auth)
-	s.mux.Handle("/api/v1/runners/register", s.auth.RequireRegistrationToken(http.HandlerFunc(s.handlers.RegisterRunner)))
+	// Runner registration (platform runner registration token auth)
+	s.mux.Handle("/api/v1/runners/register", s.auth.RequireRunnerRegistration(http.HandlerFunc(s.handlers.RegisterRunner)))
 
 	// Runner lease (runner token auth)
 	s.mux.Handle("/api/v1/runs/lease", s.auth.RequireRunner(http.HandlerFunc(s.handlers.LeaseRun)))

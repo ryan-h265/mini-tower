@@ -40,6 +40,7 @@ The control plane manages state and stores artifacts. Runners poll for work, exe
 **1. Start the control plane:**
 ```bash
 export MINITOWER_BOOTSTRAP_TOKEN=dev
+export MINITOWER_RUNNER_REGISTRATION_TOKEN=runner-secret
 go run ./cmd/minitowerd
 ```
 
@@ -51,7 +52,7 @@ curl -sS -X POST http://localhost:8080/api/v1/bootstrap/team \
   -d '{"slug":"acme","name":"Acme Corp"}'
 ```
 
-Save the `token` and `registration_token` from the response.
+Save the `token` from the response.
 
 **3. Create an app:**
 ```bash
@@ -91,7 +92,7 @@ curl -sS -X POST http://localhost:8080/api/v1/apps/hello/runs \
 ```bash
 MINITOWER_SERVER_URL=http://localhost:8080 \
 MINITOWER_RUNNER_NAME=runner-1 \
-MINITOWER_REGISTRATION_TOKEN=$REG_TOKEN \
+MINITOWER_RUNNER_REGISTRATION_TOKEN=runner-secret \
 go run ./cmd/minitower-runner
 ```
 
@@ -111,6 +112,7 @@ curl -sS http://localhost:8080/api/v1/runs/1/logs -H "Authorization: Bearer $TEA
 | `MINITOWER_DB_PATH` | `./minitower.db` | SQLite database path |
 | `MINITOWER_OBJECTS_DIR` | `./objects` | Artifact storage directory |
 | `MINITOWER_BOOTSTRAP_TOKEN` | `dev` | Token for team bootstrap |
+| `MINITOWER_RUNNER_REGISTRATION_TOKEN` | — | Token for runner registration (required) |
 | `MINITOWER_LEASE_TTL` | `60s` | Runner lease duration |
 | `MINITOWER_EXPIRY_CHECK_INTERVAL` | `10s` | Lease expiry check interval |
 | `MINITOWER_MAX_REQUEST_BODY_SIZE` | `10485760` | Max request body (10MB) |
@@ -122,8 +124,8 @@ curl -sS http://localhost:8080/api/v1/runs/1/logs -H "Authorization: Bearer $TEA
 |----------|---------|-------------|
 | `MINITOWER_SERVER_URL` | — | Control plane URL (required) |
 | `MINITOWER_RUNNER_NAME` | — | Unique runner name (required) |
-| `MINITOWER_REGISTRATION_TOKEN` | — | Token for first registration |
-| `MINITOWER_RUNNER_TOKEN` | — | Saved after registration |
+| `MINITOWER_RUNNER_REGISTRATION_TOKEN` | — | Platform token for registration |
+| `MINITOWER_RUNNER_ENVIRONMENT` | `default` | Environment label for matching runs |
 | `MINITOWER_PYTHON_BIN` | `python3` | Python interpreter path |
 | `MINITOWER_POLL_INTERVAL` | `3s` | Work poll interval |
 | `MINITOWER_KILL_GRACE_PERIOD` | `10s` | SIGTERM to SIGKILL grace |

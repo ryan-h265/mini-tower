@@ -17,9 +17,8 @@ var (
 
 type Runner struct {
 	ID            int64
-	TeamID        int64
 	Name          string
-	EnvironmentID int64
+	Environment   string
 	Labels        map[string]string
 	TokenHash     string
 	Status        string
@@ -46,13 +45,13 @@ type RunAttempt struct {
 }
 
 // CreateRunner registers a new runner.
-func (s *Store) CreateRunner(ctx context.Context, teamID int64, name string, envID int64, tokenHash string) (*Runner, error) {
+func (s *Store) CreateRunner(ctx context.Context, name, environment, tokenHash string) (*Runner, error) {
 	now := time.Now().UnixMilli()
 
 	result, err := s.db.ExecContext(ctx,
-		`INSERT INTO runners (team_id, name, environment_id, token_hash, status, max_concurrent, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'online', 1, ?, ?)`,
-		teamID, name, envID, tokenHash, now, now,
+		`INSERT INTO runners (name, environment, token_hash, status, max_concurrent, created_at, updated_at)
+     VALUES (?, ?, ?, 'online', 1, ?, ?)`,
+		name, environment, tokenHash, now, now,
 	)
 	if err != nil {
 		return nil, err
@@ -65,9 +64,8 @@ func (s *Store) CreateRunner(ctx context.Context, teamID int64, name string, env
 
 	return &Runner{
 		ID:            id,
-		TeamID:        teamID,
 		Name:          name,
-		EnvironmentID: envID,
+		Environment:   environment,
 		TokenHash:     tokenHash,
 		Status:        "online",
 		MaxConcurrent: 1,
@@ -82,10 +80,10 @@ func (s *Store) GetRunnerByTokenHash(ctx context.Context, tokenHash string) (*Ru
 	var createdAt, updatedAt int64
 	var lastSeenAt sql.NullInt64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, team_id, name, environment_id, token_hash, status, max_concurrent, last_seen_at, created_at, updated_at
+		`SELECT id, name, environment, token_hash, status, max_concurrent, last_seen_at, created_at, updated_at
      FROM runners WHERE token_hash = ?`,
 		tokenHash,
-	).Scan(&r.ID, &r.TeamID, &r.Name, &r.EnvironmentID, &r.TokenHash, &r.Status, &r.MaxConcurrent, &lastSeenAt, &createdAt, &updatedAt)
+	).Scan(&r.ID, &r.Name, &r.Environment, &r.TokenHash, &r.Status, &r.MaxConcurrent, &lastSeenAt, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -101,16 +99,16 @@ func (s *Store) GetRunnerByTokenHash(ctx context.Context, tokenHash string) (*Ru
 	return &r, nil
 }
 
-// GetRunnerByName finds a runner by team and name.
-func (s *Store) GetRunnerByName(ctx context.Context, teamID int64, name string) (*Runner, error) {
+// GetRunnerByName finds a runner by name (globally unique).
+func (s *Store) GetRunnerByName(ctx context.Context, name string) (*Runner, error) {
 	var r Runner
 	var createdAt, updatedAt int64
 	var lastSeenAt sql.NullInt64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, team_id, name, environment_id, token_hash, status, max_concurrent, last_seen_at, created_at, updated_at
-     FROM runners WHERE team_id = ? AND name = ?`,
-		teamID, name,
-	).Scan(&r.ID, &r.TeamID, &r.Name, &r.EnvironmentID, &r.TokenHash, &r.Status, &r.MaxConcurrent, &lastSeenAt, &createdAt, &updatedAt)
+		`SELECT id, name, environment, token_hash, status, max_concurrent, last_seen_at, created_at, updated_at
+     FROM runners WHERE name = ?`,
+		name,
+	).Scan(&r.ID, &r.Name, &r.Environment, &r.TokenHash, &r.Status, &r.MaxConcurrent, &lastSeenAt, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -162,14 +160,15 @@ func (s *Store) LeaseRun(ctx context.Context, runner *Runner, leaseTokenHash str
 		return nil, nil, ErrLeaseConflict
 	}
 
-	// Find next queued run for this team/environment
+	// Find next queued run matching this runner's environment label
 	var runID int64
 	err = tx.QueryRowContext(ctx,
-		`SELECT id FROM runs
-     WHERE team_id = ? AND environment_id = ? AND status = 'queued' AND cancel_requested = 0
-     ORDER BY priority DESC, queued_at ASC, id ASC
+		`SELECT r.id FROM runs r
+     JOIN environments e ON r.environment_id = e.id
+     WHERE e.name = ? AND r.status = 'queued' AND r.cancel_requested = 0
+     ORDER BY r.priority DESC, r.queued_at ASC, r.id ASC
      LIMIT 1`,
-		runner.TeamID, runner.EnvironmentID,
+		runner.Environment,
 	).Scan(&runID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil, ErrNoRunAvailable
@@ -236,8 +235,8 @@ func (s *Store) LeaseRun(ctx context.Context, runner *Runner, leaseTokenHash str
 		return nil, nil, err
 	}
 
-	// Fetch the full run
-	run, err := s.GetRunByID(ctx, runner.TeamID, runID)
+	// Fetch the leased run
+	run, err := s.GetRunByIDDirect(ctx, runID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -564,10 +563,10 @@ func (s *Store) GetRunnerByID(ctx context.Context, runnerID int64) (*Runner, err
 	var createdAt, updatedAt int64
 	var lastSeenAt sql.NullInt64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, team_id, name, environment_id, token_hash, status, max_concurrent, last_seen_at, created_at, updated_at
+		`SELECT id, name, environment, token_hash, status, max_concurrent, last_seen_at, created_at, updated_at
      FROM runners WHERE id = ?`,
 		runnerID,
-	).Scan(&r.ID, &r.TeamID, &r.Name, &r.EnvironmentID, &r.TokenHash, &r.Status, &r.MaxConcurrent, &lastSeenAt, &createdAt, &updatedAt)
+	).Scan(&r.ID, &r.Name, &r.Environment, &r.TokenHash, &r.Status, &r.MaxConcurrent, &lastSeenAt, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

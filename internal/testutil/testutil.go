@@ -52,12 +52,7 @@ func CreateTeam(t *testing.T, s *store.Store, slug string) (*store.Team, string)
 	t.Helper()
 	ctx := context.Background()
 
-	regToken, regHash, err := auth.GeneratePrefixedToken(auth.PrefixRegistrationToken)
-	if err != nil {
-		t.Fatalf("generate registration token: %v", err)
-	}
-
-	team, err := s.CreateTeam(ctx, slug, slug+" team", regHash)
+	team, err := s.CreateTeam(ctx, slug, slug+" team")
 	if err != nil {
 		t.Fatalf("create team: %v", err)
 	}
@@ -71,11 +66,10 @@ func CreateTeam(t *testing.T, s *store.Store, slug string) (*store.Team, string)
 		t.Fatalf("create team token: %v", err)
 	}
 
-	_ = regToken
 	return team, teamToken
 }
 
-func CreateRunner(t *testing.T, s *store.Store, teamID, envID int64, name string) (*store.Runner, string) {
+func CreateRunner(t *testing.T, s *store.Store, name, environment string) (*store.Runner, string) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -84,7 +78,7 @@ func CreateRunner(t *testing.T, s *store.Store, teamID, envID int64, name string
 		t.Fatalf("generate runner token: %v", err)
 	}
 
-	runner, err := s.CreateRunner(ctx, teamID, name, envID, tokenHash)
+	runner, err := s.CreateRunner(ctx, name, environment, tokenHash)
 	if err != nil {
 		t.Fatalf("create runner: %v", err)
 	}

@@ -22,14 +22,15 @@ const (
 
 // Config contains control-plane configuration.
 type Config struct {
-	ListenAddr          string
-	DBPath              string
-	ObjectsDir          string
-	BootstrapToken      string
-	LeaseTTL            time.Duration
-	ExpiryCheckInterval time.Duration
-	MaxRequestBodySize  int64
-	MaxArtifactSize     int64
+	ListenAddr               string
+	DBPath                   string
+	ObjectsDir               string
+	BootstrapToken           string
+	RunnerRegistrationToken  string
+	LeaseTTL                 time.Duration
+	ExpiryCheckInterval      time.Duration
+	MaxRequestBodySize       int64
+	MaxArtifactSize          int64
 }
 
 // Load reads configuration from environment variables with defaults.
@@ -86,8 +87,15 @@ func Load() (Config, error) {
 		cfg.MaxArtifactSize = size
 	}
 
+	if v := strings.TrimSpace(os.Getenv("MINITOWER_RUNNER_REGISTRATION_TOKEN")); v != "" {
+		cfg.RunnerRegistrationToken = v
+	}
+
 	if cfg.BootstrapToken == "" {
 		return cfg, errors.New("MINITOWER_BOOTSTRAP_TOKEN is required")
+	}
+	if cfg.RunnerRegistrationToken == "" {
+		return cfg, errors.New("MINITOWER_RUNNER_REGISTRATION_TOKEN is required")
 	}
 
 	return cfg, nil

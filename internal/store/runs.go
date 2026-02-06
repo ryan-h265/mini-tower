@@ -150,6 +150,46 @@ func (s *Store) GetRunByID(ctx context.Context, teamID, runID int64) (*Run, erro
 	return &r, nil
 }
 
+// GetRunByIDDirect returns a run by ID without team scoping.
+// Used by runner-scoped handlers where the lease token proves authorization.
+func (s *Store) GetRunByIDDirect(ctx context.Context, runID int64) (*Run, error) {
+	var r Run
+	var inputJSON sql.NullString
+	var queuedAt, createdAt, updatedAt int64
+	var startedAt, finishedAt sql.NullInt64
+	var cancelRequested int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, team_id, app_id, environment_id, app_version_id, run_no, input_json, status, priority, max_retries, retry_count, cancel_requested, queued_at, started_at, finished_at, created_at, updated_at
+     FROM runs WHERE id = ?`,
+		runID,
+	).Scan(&r.ID, &r.TeamID, &r.AppID, &r.EnvironmentID, &r.AppVersionID, &r.RunNo, &inputJSON, &r.Status, &r.Priority, &r.MaxRetries, &r.RetryCount, &cancelRequested, &queuedAt, &startedAt, &finishedAt, &createdAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	r.CancelRequested = cancelRequested == 1
+	r.QueuedAt = time.UnixMilli(queuedAt)
+	r.CreatedAt = time.UnixMilli(createdAt)
+	r.UpdatedAt = time.UnixMilli(updatedAt)
+	if startedAt.Valid {
+		t := time.UnixMilli(startedAt.Int64)
+		r.StartedAt = &t
+	}
+	if finishedAt.Valid {
+		t := time.UnixMilli(finishedAt.Int64)
+		r.FinishedAt = &t
+	}
+	if inputJSON.Valid {
+		if err := json.Unmarshal([]byte(inputJSON.String), &r.Input); err != nil {
+			return nil, err
+		}
+	}
+	return &r, nil
+}
+
 // GetRunByAppAndRunNo returns a run by app ID and run number.
 func (s *Store) GetRunByAppAndRunNo(ctx context.Context, teamID, appID, runNo int64) (*Run, error) {
 	var r Run

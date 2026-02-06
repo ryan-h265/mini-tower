@@ -5,10 +5,10 @@ import "context"
 type contextKey string
 
 const (
-	ctxKeyTeamID        contextKey = "teamID"
-	ctxKeyTeamTokenID   contextKey = "teamTokenID"
-	ctxKeyRunnerID      contextKey = "runnerID"
-	ctxKeyEnvironmentID contextKey = "environmentID"
+	ctxKeyTeamID      contextKey = "teamID"
+	ctxKeyTeamTokenID contextKey = "teamTokenID"
+	ctxKeyRunnerID    contextKey = "runnerID"
+	ctxKeyEnvironment contextKey = "environment"
 )
 
 func WithTeamID(ctx context.Context, teamID int64) context.Context {
@@ -41,12 +41,12 @@ func runnerIDFromContext(ctx context.Context) (int64, bool) {
 	return id, ok
 }
 
-func WithEnvironmentID(ctx context.Context, envID int64) context.Context {
-	return context.WithValue(ctx, ctxKeyEnvironmentID, envID)
+func WithEnvironment(ctx context.Context, env string) context.Context {
+	return context.WithValue(ctx, ctxKeyEnvironment, env)
 }
 
-func environmentIDFromContext(ctx context.Context) (int64, bool) {
-	value := ctx.Value(ctxKeyEnvironmentID)
-	id, ok := value.(int64)
-	return id, ok
+func environmentFromContext(ctx context.Context) (string, bool) {
+	value := ctx.Value(ctxKeyEnvironment)
+	env, ok := value.(string)
+	return env, ok
 }

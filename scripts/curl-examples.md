@@ -10,7 +10,9 @@ go build -o bin/minitowerd ./cmd/minitowerd
 go build -o bin/minitower-runner ./cmd/minitower-runner
 
 # Run server (in one terminal)
-MINITOWER_BOOTSTRAP_TOKEN=secret ./bin/minitowerd
+MINITOWER_BOOTSTRAP_TOKEN=secret \
+MINITOWER_RUNNER_REGISTRATION_TOKEN=runner-secret \
+./bin/minitowerd
 ```
 
 ### 2. Bootstrap Team
@@ -27,15 +29,13 @@ Response:
 {
   "team_id": 1,
   "slug": "myteam",
-  "registration_token": "mtreg_...",
   "token": "mtk_..."
 }
 ```
 
-Save these tokens:
+Save the token:
 ```bash
 export TOKEN="mtk_..."           # Team API token
-export REG_TOKEN="mtreg_..."     # Runner registration token
 ```
 
 ## App Management
@@ -146,7 +146,7 @@ curl -s http://localhost:8080/api/v1/runs/1/logs \
 ```bash
 MINITOWER_SERVER_URL=http://localhost:8080 \
 MINITOWER_RUNNER_NAME=my-runner \
-MINITOWER_REGISTRATION_TOKEN=$REG_TOKEN \
+MINITOWER_RUNNER_REGISTRATION_TOKEN=runner-secret \
 MINITOWER_DATA_DIR=~/.minitower \
 ./bin/minitower-runner
 ```
@@ -163,7 +163,8 @@ The runner will:
 |----------|----------|---------|-------------|
 | `MINITOWER_SERVER_URL` | Yes | - | Server URL |
 | `MINITOWER_RUNNER_NAME` | Yes | - | Unique runner name |
-| `MINITOWER_REGISTRATION_TOKEN` | First run | - | Registration token |
+| `MINITOWER_RUNNER_REGISTRATION_TOKEN` | First run | - | Platform registration token |
+| `MINITOWER_RUNNER_ENVIRONMENT` | No | `default` | Environment label for matching runs |
 | `MINITOWER_DATA_DIR` | No | `~/.minitower` | Data directory |
 | `MINITOWER_PYTHON_BIN` | No | `python3` | Python binary |
 | `MINITOWER_POLL_INTERVAL` | No | `3s` | Poll interval |
@@ -198,5 +199,6 @@ curl -s http://localhost:8080/ready
 | `MINITOWER_DB_PATH` | `./minitower.db` | SQLite database path |
 | `MINITOWER_OBJECTS_DIR` | `./objects` | Artifact storage directory |
 | `MINITOWER_BOOTSTRAP_TOKEN` | Required | Bootstrap token |
+| `MINITOWER_RUNNER_REGISTRATION_TOKEN` | Required | Runner registration token |
 | `MINITOWER_LEASE_TTL` | `60s` | Lease duration |
 | `MINITOWER_EXPIRY_CHECK_INTERVAL` | `10s` | Expiry check interval |

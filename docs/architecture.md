@@ -207,13 +207,11 @@ erDiagram
     TEAM ||--o{ TEAM_TOKEN : has
     TEAM ||--o{ ENVIRONMENT : has
     TEAM ||--o{ APP : owns
-    TEAM ||--o{ RUNNER : owns
 
     APP ||--o{ APP_VERSION : has
     APP ||--o{ RUN : has
 
     ENVIRONMENT ||--o{ RUN : scopes
-    ENVIRONMENT ||--o{ RUNNER : scopes
 
     APP_VERSION ||--o{ RUN : triggers
 
@@ -226,7 +224,6 @@ erDiagram
         int id PK
         string slug UK
         string name
-        string registration_token_hash
     }
 
     APP {
@@ -270,9 +267,8 @@ erDiagram
 
     RUNNER {
         int id PK
-        int team_id FK
-        int environment_id FK
-        string name
+        string name UK
+        string environment
         string status
     }
 ```

@@ -27,8 +27,8 @@ func TestLeaseRunConcurrentSingleAssignment(t *testing.T) {
 	version := testutil.CreateVersion(t, s, app.ID)
 	run := testutil.CreateRun(t, s, team.ID, app.ID, env.ID, version.ID, 0, 0)
 
-	runner1, _ := testutil.CreateRunner(t, s, team.ID, env.ID, "runner-1")
-	runner2, _ := testutil.CreateRunner(t, s, team.ID, env.ID, "runner-2")
+	runner1, _ := testutil.CreateRunner(t, s, "runner-1", "default")
+	runner2, _ := testutil.CreateRunner(t, s, "runner-2", "default")
 
 	_, leaseHash1, _ := auth.GenerateToken()
 	_, leaseHash2, _ := auth.GenerateToken()
@@ -89,7 +89,7 @@ func TestRunnerCannotLeaseSecondRun(t *testing.T) {
 	_ = testutil.CreateRun(t, s, team.ID, app.ID, env.ID, version.ID, 0, 0)
 	run2 := testutil.CreateRun(t, s, team.ID, app.ID, env.ID, version.ID, 0, 0)
 
-	runner, _ := testutil.CreateRunner(t, s, team.ID, env.ID, "runner-1")
+	runner, _ := testutil.CreateRunner(t, s, "runner-1", "default")
 
 	_, leaseHash1, _ := auth.GenerateToken()
 	if _, _, err := s.LeaseRun(ctx, runner, leaseHash1, time.Minute); err != nil {
@@ -133,7 +133,7 @@ func TestQueueSelectionDeterministic(t *testing.T) {
 	mustExec(t, dbConn, `UPDATE runs SET queued_at = ? WHERE id = ?`, 500, run3.ID)
 	mustExec(t, dbConn, `UPDATE runs SET queued_at = ? WHERE id = ?`, 1000, run1.ID)
 
-	runner, _ := testutil.CreateRunner(t, s, team.ID, env.ID, "runner-queue")
+	runner, _ := testutil.CreateRunner(t, s, "runner-queue", "default")
 	_, leaseHash, _ := auth.GenerateToken()
 	leasedRun, _, err := s.LeaseRun(ctx, runner, leaseHash, time.Minute)
 	if err != nil {
@@ -159,7 +159,7 @@ func TestAppendLogsDedupe(t *testing.T) {
 	version := testutil.CreateVersion(t, s, app.ID)
 	_ = testutil.CreateRun(t, s, team.ID, app.ID, env.ID, version.ID, 0, 0)
 
-	runner, _ := testutil.CreateRunner(t, s, team.ID, env.ID, "runner-logs")
+	runner, _ := testutil.CreateRunner(t, s, "runner-logs", "default")
 	_, attempt, _, _ := testutil.LeaseRun(t, s, runner)
 
 	logs := []store.LogEntry{
@@ -195,7 +195,7 @@ func TestStartAttemptIdempotent(t *testing.T) {
 	version := testutil.CreateVersion(t, s, app.ID)
 	_ = testutil.CreateRun(t, s, team.ID, app.ID, env.ID, version.ID, 0, 0)
 
-	runner, _ := testutil.CreateRunner(t, s, team.ID, env.ID, "runner-start")
+	runner, _ := testutil.CreateRunner(t, s, "runner-start", "default")
 	_, attempt, _, leaseHash := testutil.LeaseRun(t, s, runner)
 
 	a1, err := s.StartAttempt(ctx, attempt.ID, leaseHash)
@@ -229,7 +229,7 @@ func TestHeartbeatIdempotent(t *testing.T) {
 	version := testutil.CreateVersion(t, s, app.ID)
 	_ = testutil.CreateRun(t, s, team.ID, app.ID, env.ID, version.ID, 0, 0)
 
-	runner, _ := testutil.CreateRunner(t, s, team.ID, env.ID, "runner-heartbeat")
+	runner, _ := testutil.CreateRunner(t, s, "runner-heartbeat", "default")
 	_, attempt, _, leaseHash := testutil.LeaseRun(t, s, runner)
 
 	a1, err := s.ExtendLease(ctx, attempt.ID, leaseHash, time.Minute)
@@ -259,7 +259,7 @@ func TestCompleteAttemptIdempotent(t *testing.T) {
 	version := testutil.CreateVersion(t, s, app.ID)
 	_ = testutil.CreateRun(t, s, team.ID, app.ID, env.ID, version.ID, 0, 0)
 
-	runner, _ := testutil.CreateRunner(t, s, team.ID, env.ID, "runner-complete")
+	runner, _ := testutil.CreateRunner(t, s, "runner-complete", "default")
 	_, attempt, _, leaseHash := testutil.LeaseRun(t, s, runner)
 
 	exitCode := 0
@@ -285,7 +285,7 @@ func TestCompleteAttemptConflict(t *testing.T) {
 	version := testutil.CreateVersion(t, s, app.ID)
 	_ = testutil.CreateRun(t, s, team.ID, app.ID, env.ID, version.ID, 0, 0)
 
-	runner, _ := testutil.CreateRunner(t, s, team.ID, env.ID, "runner-complete-conflict")
+	runner, _ := testutil.CreateRunner(t, s, "runner-complete-conflict", "default")
 	_, attempt, _, leaseHash := testutil.LeaseRun(t, s, runner)
 
 	exitCode := 0
@@ -354,7 +354,7 @@ func TestCancelLeasedRunAndFinalize(t *testing.T) {
 	version := testutil.CreateVersion(t, s, app.ID)
 	_ = testutil.CreateRun(t, s, team.ID, app.ID, env.ID, version.ID, 0, 0)
 
-	runner, _ := testutil.CreateRunner(t, s, team.ID, env.ID, "runner-cancel-leased")
+	runner, _ := testutil.CreateRunner(t, s, "runner-cancel-leased", "default")
 	_, attempt, _, leaseHash := testutil.LeaseRun(t, s, runner)
 
 	updated, err := s.CancelRun(ctx, team.ID, attempt.RunID)
@@ -396,7 +396,7 @@ func TestCancelConflictsWithCompletedResult(t *testing.T) {
 	version := testutil.CreateVersion(t, s, app.ID)
 	_ = testutil.CreateRun(t, s, team.ID, app.ID, env.ID, version.ID, 0, 0)
 
-	runner, _ := testutil.CreateRunner(t, s, team.ID, env.ID, "runner-cancel-conflict")
+	runner, _ := testutil.CreateRunner(t, s, "runner-cancel-conflict", "default")
 	_, attempt, _, leaseHash := testutil.LeaseRun(t, s, runner)
 
 	if _, err := s.CancelRun(ctx, team.ID, attempt.RunID); err != nil {
@@ -435,13 +435,8 @@ func TestRunnerStatusTransitionsOnlineToOffline(t *testing.T) {
 	defer cleanup.Close(t)
 
 	ctx := context.Background()
-	team, _ := testutil.CreateTeam(t, s, "team-status")
-	env, err := s.GetOrCreateDefaultEnvironment(ctx, team.ID)
-	if err != nil {
-		t.Fatalf("get env: %v", err)
-	}
 
-	runner, _ := testutil.CreateRunner(t, s, team.ID, env.ID, "runner-status")
+	runner, _ := testutil.CreateRunner(t, s, "runner-status", "default")
 
 	// Set last_seen_at to 10 minutes ago
 	tenMinutesAgo := time.Now().Add(-10 * time.Minute).UnixMilli()
@@ -481,13 +476,8 @@ func TestRunnerStatusTransitionsOfflineToOnline(t *testing.T) {
 	defer cleanup.Close(t)
 
 	ctx := context.Background()
-	team, _ := testutil.CreateTeam(t, s, "team-status-online")
-	env, err := s.GetOrCreateDefaultEnvironment(ctx, team.ID)
-	if err != nil {
-		t.Fatalf("get env: %v", err)
-	}
 
-	runner, _ := testutil.CreateRunner(t, s, team.ID, env.ID, "runner-status-online")
+	runner, _ := testutil.CreateRunner(t, s, "runner-status-online", "default")
 
 	// Set runner to offline
 	mustExec(t, dbConn, `UPDATE runners SET status = 'offline' WHERE id = ?`, runner.ID)
@@ -524,13 +514,8 @@ func TestRunnerStaysOnlineWhenRecentlySeen(t *testing.T) {
 	defer cleanup.Close(t)
 
 	ctx := context.Background()
-	team, _ := testutil.CreateTeam(t, s, "team-status-recent")
-	env, err := s.GetOrCreateDefaultEnvironment(ctx, team.ID)
-	if err != nil {
-		t.Fatalf("get env: %v", err)
-	}
 
-	runner, _ := testutil.CreateRunner(t, s, team.ID, env.ID, "runner-status-recent")
+	runner, _ := testutil.CreateRunner(t, s, "runner-status-recent", "default")
 
 	// Set last_seen_at to 1 minute ago (recent)
 	oneMinuteAgo := time.Now().Add(-1 * time.Minute).UnixMilli()
@@ -570,7 +555,7 @@ func TestLeaseRunUpdatesRunnerLastSeen(t *testing.T) {
 	version := testutil.CreateVersion(t, s, app.ID)
 	_ = testutil.CreateRun(t, s, team.ID, app.ID, env.ID, version.ID, 0, 0)
 
-	runner, _ := testutil.CreateRunner(t, s, team.ID, env.ID, "runner-lease-seen")
+	runner, _ := testutil.CreateRunner(t, s, "runner-lease-seen", "default")
 
 	// Verify runner has no last_seen_at initially (or very recent)
 	before, err := s.GetRunnerByID(ctx, runner.ID)

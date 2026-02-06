@@ -10,12 +10,11 @@ import (
 var ErrTeamExists = errors.New("team already exists")
 
 type Team struct {
-	ID                    int64
-	Slug                  string
-	Name                  string
-	RegistrationTokenHash string
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
+	ID        int64
+	Slug      string
+	Name      string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type TeamToken struct {
@@ -27,14 +26,14 @@ type TeamToken struct {
 	RevokedAt *time.Time
 }
 
-// CreateTeam creates a new team with a registration token hash.
-func (s *Store) CreateTeam(ctx context.Context, slug, name, registrationTokenHash string) (*Team, error) {
+// CreateTeam creates a new team.
+func (s *Store) CreateTeam(ctx context.Context, slug, name string) (*Team, error) {
 	now := time.Now().UnixMilli()
 
 	result, err := s.db.ExecContext(ctx,
-		`INSERT INTO teams (slug, name, registration_token_hash, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?)`,
-		slug, name, registrationTokenHash, now, now,
+		`INSERT INTO teams (slug, name, created_at, updated_at)
+     VALUES (?, ?, ?, ?)`,
+		slug, name, now, now,
 	)
 	if err != nil {
 		return nil, err
@@ -46,12 +45,11 @@ func (s *Store) CreateTeam(ctx context.Context, slug, name, registrationTokenHas
 	}
 
 	return &Team{
-		ID:                    id,
-		Slug:                  slug,
-		Name:                  name,
-		RegistrationTokenHash: registrationTokenHash,
-		CreatedAt:             time.UnixMilli(now),
-		UpdatedAt:             time.UnixMilli(now),
+		ID:        id,
+		Slug:      slug,
+		Name:      name,
+		CreatedAt: time.UnixMilli(now),
+		UpdatedAt: time.UnixMilli(now),
 	}, nil
 }
 
@@ -86,10 +84,10 @@ func (s *Store) GetTeamByID(ctx context.Context, id int64) (*Team, error) {
 	var t Team
 	var createdAt, updatedAt int64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, slug, name, registration_token_hash, created_at, updated_at
+		`SELECT id, slug, name, created_at, updated_at
      FROM teams WHERE id = ?`,
 		id,
-	).Scan(&t.ID, &t.Slug, &t.Name, &t.RegistrationTokenHash, &createdAt, &updatedAt)
+	).Scan(&t.ID, &t.Slug, &t.Name, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -126,24 +124,4 @@ func (s *Store) CreateTeamToken(ctx context.Context, teamID int64, tokenHash str
 		Name:      name,
 		CreatedAt: time.UnixMilli(now),
 	}, nil
-}
-
-// GetTeamByRegistrationTokenHash finds a team by registration token hash.
-func (s *Store) GetTeamByRegistrationTokenHash(ctx context.Context, hash string) (*Team, error) {
-	var t Team
-	var createdAt, updatedAt int64
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, slug, name, registration_token_hash, created_at, updated_at
-     FROM teams WHERE registration_token_hash = ?`,
-		hash,
-	).Scan(&t.ID, &t.Slug, &t.Name, &t.RegistrationTokenHash, &createdAt, &updatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	t.CreatedAt = time.UnixMilli(createdAt)
-	t.UpdatedAt = time.UnixMilli(updatedAt)
-	return &t, nil
 }

@@ -92,6 +92,29 @@ func (s *Store) GetAppByID(ctx context.Context, teamID int64, appID int64) (*App
 	return &a, nil
 }
 
+// GetAppByIDDirect returns an app by ID without team scoping.
+// Used by runner-scoped handlers where the lease token proves authorization.
+func (s *Store) GetAppByIDDirect(ctx context.Context, appID int64) (*App, error) {
+	var a App
+	var createdAt, updatedAt int64
+	var disabled int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, team_id, slug, description, disabled, created_at, updated_at
+     FROM apps WHERE id = ?`,
+		appID,
+	).Scan(&a.ID, &a.TeamID, &a.Slug, &a.Description, &disabled, &createdAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	a.Disabled = disabled == 1
+	a.CreatedAt = time.UnixMilli(createdAt)
+	a.UpdatedAt = time.UnixMilli(updatedAt)
+	return &a, nil
+}
+
 // ListApps returns all apps for a team.
 func (s *Store) ListApps(ctx context.Context, teamID int64) ([]*App, error) {
 	rows, err := s.db.QueryContext(ctx,

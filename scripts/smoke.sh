@@ -34,6 +34,7 @@ DBPATH=$(mktemp -u).db
 OBJDIR=$(mktemp -d)
 PORT=$((8080 + RANDOM % 1000))
 BOOTSTRAP_TOKEN="smoke-test-$(date +%s)"
+RUNNER_REG_TOKEN="runner-reg-$(date +%s)"
 
 log "Smoke test starting..."
 log "  Work dir: $WORKDIR"
@@ -52,6 +53,7 @@ MINITOWER_LISTEN_ADDR=":$PORT" \
 MINITOWER_DB_PATH="$DBPATH" \
 MINITOWER_OBJECTS_DIR="$OBJDIR" \
 MINITOWER_BOOTSTRAP_TOKEN="$BOOTSTRAP_TOKEN" \
+MINITOWER_RUNNER_REGISTRATION_TOKEN="$RUNNER_REG_TOKEN" \
 MINITOWER_LEASE_TTL=30s \
 MINITOWER_EXPIRY_CHECK_INTERVAL=5s \
 "$WORKDIR/minitowerd" &
@@ -86,9 +88,8 @@ BOOTSTRAP_RESP=$(curl -s -X POST "http://localhost:$PORT/api/v1/bootstrap/team" 
   -d '{"slug":"smoke","name":"Smoke Team"}')
 
 TOKEN=$(echo "$BOOTSTRAP_RESP" | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
-REG_TOKEN=$(echo "$BOOTSTRAP_RESP" | grep -o '"registration_token":"[^"]*"' | cut -d'"' -f4)
 
-if [ -z "$TOKEN" ] || [ -z "$REG_TOKEN" ]; then
+if [ -z "$TOKEN" ]; then
   fail "Bootstrap failed: $BOOTSTRAP_RESP"
 fi
 log "Team bootstrapped"
@@ -154,7 +155,7 @@ log "Starting runner..."
 mkdir -p "$WORKDIR/runner"
 MINITOWER_SERVER_URL="http://localhost:$PORT" \
 MINITOWER_RUNNER_NAME="smoke-runner" \
-MINITOWER_REGISTRATION_TOKEN="$REG_TOKEN" \
+MINITOWER_RUNNER_REGISTRATION_TOKEN="$RUNNER_REG_TOKEN" \
 MINITOWER_DATA_DIR="$WORKDIR/runner" \
 MINITOWER_POLL_INTERVAL=1s \
 "$WORKDIR/minitower-runner" &

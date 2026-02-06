@@ -87,7 +87,7 @@ Deferred features are **intentionally excluded** to minimize the failure surface
 4. `AppVersion`: immutable packaged artifact spec (`artifact_object_key`, `artifact_sha256`, `entrypoint`, `timeout_seconds`, optional params schema).
 5. `Run`: lifecycle state for execution request.
 6. `RunAttempt`: retry attempt with lease identity.
-7. `Runner`: self-hosted worker bound to team + environment.
+7. `Runner`: self-hosted worker with an environment label (platform-level, not team-bound).
 8. `RunLog`: stdout/stderr lines keyed by attempt sequence.
 
 ---
@@ -149,15 +149,15 @@ Deferred features are **intentionally excluded** to minimize the failure surface
 
 ### Tables
 
-- `teams(id, slug, name, registration_token_hash, created_at, updated_at)`
-- `team_tokens(id, team_id, token_hash, created_at, revoked_at, last_used_at)`
+- `teams(id, slug, name, created_at, updated_at)`
+- `team_tokens(id, team_id, token_hash, name, created_at, revoked_at, last_used_at)`
 - `environments(id, team_id, name, is_default, created_at, updated_at, UNIQUE(team_id,name))`
 - `apps(id, team_id, slug, description, disabled, created_at, updated_at, UNIQUE(team_id,slug))`
 - `app_versions(id, app_id, version_no, artifact_object_key, artifact_sha256, entrypoint, timeout_seconds, params_schema_json, created_at, UNIQUE(app_id,version_no))`
 - `runs(id, team_id, app_id, environment_id, app_version_id, run_no, input_json, status, priority, max_retries, retry_count, cancel_requested, queued_at, started_at, finished_at, created_at, updated_at, UNIQUE(app_id,run_no))`
 - `run_attempts(id, run_id, attempt_no, runner_id, lease_token_hash, lease_expires_at, status, exit_code, error_message, started_at, finished_at, created_at, updated_at, UNIQUE(run_id,attempt_no))`
 - `run_logs(id, run_attempt_id, seq, stream, line, logged_at, UNIQUE(run_attempt_id,seq))`
-- `runners(id, team_id, name, environment_id, labels_json, token_hash, status, max_concurrent, last_seen_at, created_at, updated_at, UNIQUE(team_id,name))`
+- `runners(id, name, environment, labels_json, token_hash, status, max_concurrent, last_seen_at, created_at, updated_at, UNIQUE(name))`
 
 > `runs.status` and `run_attempts.status` are intentionally duplicated to avoid join-heavy hot paths during scheduling and monitoring.
 > Lease identity lives on `run_attempts` (`lease_token_hash`, `lease_expires_at`) and is the source of truth for heartbeat/log/result authorization.
@@ -171,7 +171,7 @@ Deferred features are **intentionally excluded** to minimize the failure surface
 - Partial index for expiry scans.
   - `CREATE INDEX run_attempts_expiry_idx ON run_attempts(lease_expires_at) WHERE status IN ('leased','running','cancelling');`
 - Partial index for deterministic queue selection in lease order.
-  - `CREATE INDEX runs_queue_pick_idx ON runs(team_id, environment_id, status, priority DESC, queued_at ASC, id ASC) WHERE status='queued';`
+  - `CREATE INDEX runs_queue_pick_idx ON runs(environment_id, status, priority DESC, queued_at ASC, id ASC) WHERE status='queued';`
 - Composite uniqueness to support team-scoped foreign keys.
   - `CREATE UNIQUE INDEX apps_id_team_uq ON apps(id, team_id);`
   - `CREATE UNIQUE INDEX environments_id_team_uq ON environments(id, team_id);`
@@ -180,7 +180,7 @@ Deferred features are **intentionally excluded** to minimize the failure surface
   - `runs(app_id, team_id) -> apps(id, team_id)`
   - `runs(environment_id, team_id) -> environments(id, team_id)`
   - `runs(app_version_id, app_id) -> app_versions(id, app_id)`
-  - `runners(environment_id, team_id) -> environments(id, team_id)`
+  - Runners are platform-level and match environments by name label, not FK.
   - `run_attempts(run_id) -> runs(id)`, `run_attempts(runner_id) -> runners(id)`, `run_logs(run_attempt_id) -> run_attempts(id)`
 - CHECK constraints:
   - `runs.status IN ('queued','leased','running','cancelling','completed','failed','cancelled','dead')`
@@ -247,7 +247,7 @@ Version creation request contract (single path):
 
 ### Runner
 
-1. `POST /api/v1/runners/register` (auth: registration token; returns runner token)
+1. `POST /api/v1/runners/register` (auth: platform runner registration token; returns runner token)
 2. `POST /api/v1/runs/lease`
 3. `POST /api/v1/runs/{run}/start`
 4. `POST /api/v1/runs/{run}/heartbeat`
@@ -292,7 +292,7 @@ Lease assignment is the **only code path** that transitions a run from `queued â
 ### Lease Claim (single transaction)
 
 1. Verify runner active and has no active attempt.
-2. Select queued runs for same `team_id` + `default` environment ordered by `priority DESC, queued_at ASC, id ASC`.
+2. Select queued runs matching the runner's environment label ordered by `priority DESC, queued_at ASC, id ASC`.
 3. Conditional update run state (`queued â†’ leased`) via CAS (`WHERE status='queued' AND cancel_requested=false`).
 4. Create new `run_attempt` with `status='leased'`, `lease_token_hash`, and `lease_expires_at`.
 5. Commit.
@@ -410,15 +410,15 @@ Acceptance:
 - `MINITOWER_DB_PATH` (default `./minitower.db`)
 - `MINITOWER_OBJECTS_DIR` (default `./objects`)
 - `MINITOWER_BOOTSTRAP_TOKEN` (required)
+- `MINITOWER_RUNNER_REGISTRATION_TOKEN` (required)
 - `MINITOWER_LEASE_TTL` (default `60s`)
 - `MINITOWER_EXPIRY_CHECK_INTERVAL` (default `10s`)
 
 ### Runner
 - `MINITOWER_SERVER_URL` (required)
-- `MINITOWER_TEAM_SLUG` (required)
 - `MINITOWER_RUNNER_NAME` (required)
-- `MINITOWER_RUNNER_TOKEN` (optional after first register)
-- `MINITOWER_REGISTRATION_TOKEN` (required for first register)
+- `MINITOWER_RUNNER_REGISTRATION_TOKEN` (required for first register)
+- `MINITOWER_RUNNER_ENVIRONMENT` (default `default`)
 - `MINITOWER_PYTHON_BIN` (default `python3`)
 - `MINITOWER_POLL_INTERVAL` (default `3s`)
 - `MINITOWER_KILL_GRACE_PERIOD` (default `10s`)

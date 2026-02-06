@@ -39,8 +39,7 @@ func (h *Handlers) requireLeaseContext(w http.ResponseWriter, r *http.Request, e
 // writeAttemptResponse fetches the run for cancel status and writes the
 // standard attemptResponse JSON used by StartRun and HeartbeatRun.
 func (h *Handlers) writeAttemptResponse(w http.ResponseWriter, r *http.Request, runID int64, attempt *store.RunAttempt) {
-	teamID, _ := teamIDFromContext(r.Context())
-	run, err := h.store.GetRunByID(r.Context(), teamID, runID)
+	run, err := h.store.GetRunByIDDirect(r.Context(), runID)
 	if err != nil {
 		h.logger.Error("get run", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "internal error")
@@ -58,7 +57,8 @@ func (h *Handlers) writeAttemptResponse(w http.ResponseWriter, r *http.Request, 
 }
 
 type registerRunnerRequest struct {
-	Name string `json:"name"`
+	Name        string `json:"name"`
+	Environment string `json:"environment"`
 }
 
 type registerRunnerResponse struct {
@@ -67,16 +67,10 @@ type registerRunnerResponse struct {
 	Token    string `json:"token"`
 }
 
-// RegisterRunner registers a new runner using a registration token.
+// RegisterRunner registers a new runner using the platform runner registration token.
 func (h *Handlers) RegisterRunner(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
-	teamID, ok := teamIDFromContext(r.Context())
-	if !ok {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "missing team context")
 		return
 	}
 
@@ -91,8 +85,13 @@ func (h *Handlers) RegisterRunner(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if runner already exists
-	existing, err := h.store.GetRunnerByName(r.Context(), teamID, req.Name)
+	environment := req.Environment
+	if environment == "" {
+		environment = "default"
+	}
+
+	// Check if runner already exists (globally unique name)
+	existing, err := h.store.GetRunnerByName(r.Context(), req.Name)
 	if err != nil {
 		h.logger.Error("check runner exists", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "internal error")
@@ -100,14 +99,6 @@ func (h *Handlers) RegisterRunner(w http.ResponseWriter, r *http.Request) {
 	}
 	if existing != nil {
 		writeError(w, http.StatusConflict, "conflict", "runner already exists")
-		return
-	}
-
-	// Get default environment
-	env, err := h.store.GetOrCreateDefaultEnvironment(r.Context(), teamID)
-	if err != nil {
-		h.logger.Error("get default environment", "error", err)
-		writeError(w, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}
 
@@ -119,7 +110,7 @@ func (h *Handlers) RegisterRunner(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	runner, err := h.store.CreateRunner(r.Context(), teamID, req.Name, env.ID, tokenHash)
+	runner, err := h.store.CreateRunner(r.Context(), req.Name, environment, tokenHash)
 	if err != nil {
 		h.logger.Error("create runner", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "internal error")
@@ -161,14 +152,12 @@ func (h *Handlers) LeaseRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	teamID, _ := teamIDFromContext(r.Context())
-	envID, _ := environmentIDFromContext(r.Context())
+	environment, _ := environmentFromContext(r.Context())
 
 	// Get runner
 	runner := &store.Runner{
-		ID:            runnerID,
-		TeamID:        teamID,
-		EnvironmentID: envID,
+		ID:          runnerID,
+		Environment: environment,
 	}
 
 	// Generate lease token
@@ -195,7 +184,7 @@ func (h *Handlers) LeaseRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get app and version details
-	app, err := h.store.GetAppByID(r.Context(), teamID, run.AppID)
+	app, err := h.store.GetAppByIDDirect(r.Context(), run.AppID)
 	if err != nil || app == nil {
 		h.logger.Error("get app for lease", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "internal error")
@@ -395,19 +384,13 @@ func (h *Handlers) GetArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	teamID, ok := teamIDFromContext(r.Context())
-	if !ok {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "missing context")
-		return
-	}
-
 	runID, _, _, ok := h.requireLeaseContext(w, r, extractRunIDFromArtifactPath)
 	if !ok {
 		return
 	}
 
 	// Get run and version
-	run, err := h.store.GetRunByID(r.Context(), teamID, runID)
+	run, err := h.store.GetRunByIDDirect(r.Context(), runID)
 	if err != nil || run == nil {
 		h.logger.Error("get run for artifact", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "internal error")

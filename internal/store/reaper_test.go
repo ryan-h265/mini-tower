@@ -25,7 +25,7 @@ func TestReapExpiredRequeueThenDead(t *testing.T) {
 	version := testutil.CreateVersion(t, s, app.ID)
 	run := testutil.CreateRun(t, s, team.ID, app.ID, env.ID, version.ID, 0, 1)
 
-	runner, _ := testutil.CreateRunner(t, s, team.ID, env.ID, "runner-reap")
+	runner, _ := testutil.CreateRunner(t, s, "runner-reap", "default")
 	_, attempt1, _, _ := testutil.LeaseRun(t, s, runner)
 	expireAttempt(t, dbConn, attempt1.ID, time.Now().Add(-2*time.Minute))
 
@@ -87,7 +87,7 @@ func TestReapExpiredCancelRequested(t *testing.T) {
 	version := testutil.CreateVersion(t, s, app.ID)
 	run := testutil.CreateRun(t, s, team.ID, app.ID, env.ID, version.ID, 0, 2)
 
-	runner, _ := testutil.CreateRunner(t, s, team.ID, env.ID, "runner-cancel")
+	runner, _ := testutil.CreateRunner(t, s, "runner-cancel", "default")
 	_, attempt, _, _ := testutil.LeaseRun(t, s, runner)
 	expireAttempt(t, dbConn, attempt.ID, time.Now().Add(-2*time.Minute))
 	mustExec(t, dbConn, `UPDATE runs SET cancel_requested = 1 WHERE id = ?`, run.ID)
@@ -124,7 +124,7 @@ func TestReapExpiredCancellingAttempt(t *testing.T) {
 	version := testutil.CreateVersion(t, s, app.ID)
 	run := testutil.CreateRun(t, s, team.ID, app.ID, env.ID, version.ID, 0, 0)
 
-	runner, _ := testutil.CreateRunner(t, s, team.ID, env.ID, "runner-cancelling")
+	runner, _ := testutil.CreateRunner(t, s, "runner-cancelling", "default")
 	_, attempt, _, _ := testutil.LeaseRun(t, s, runner)
 	expireAttempt(t, dbConn, attempt.ID, time.Now().Add(-2*time.Minute))
 	mustExec(t, dbConn, `UPDATE run_attempts SET status = 'cancelling' WHERE id = ?`, attempt.ID)
@@ -162,7 +162,7 @@ func TestLateResultAfterExpiryDoesNotResurrect(t *testing.T) {
 	version := testutil.CreateVersion(t, s, app.ID)
 	run := testutil.CreateRun(t, s, team.ID, app.ID, env.ID, version.ID, 0, 0)
 
-	runner, _ := testutil.CreateRunner(t, s, team.ID, env.ID, "runner-late-result")
+	runner, _ := testutil.CreateRunner(t, s, "runner-late-result", "default")
 	_, attempt, _, leaseHash := testutil.LeaseRun(t, s, runner)
 	expireAttempt(t, dbConn, attempt.ID, time.Now().Add(-2*time.Minute))
 

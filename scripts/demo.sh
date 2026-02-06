@@ -28,7 +28,7 @@ echo ""
 
 # Start server
 echo "Starting server..."
-MINITOWER_BOOTSTRAP_TOKEN=secret ./bin/minitowerd &
+MINITOWER_BOOTSTRAP_TOKEN=secret MINITOWER_RUNNER_REGISTRATION_TOKEN=runner-secret ./bin/minitowerd &
 SERVER_PID=$!
 sleep 2
 echo "Server running (PID: $SERVER_PID)"
@@ -53,11 +53,9 @@ BOOTSTRAP_RESP=$(curl -s -X POST http://localhost:8080/api/v1/bootstrap/team \
 echo "$BOOTSTRAP_RESP" | jq .
 
 TOKEN=$(echo "$BOOTSTRAP_RESP" | jq -r '.token')
-REG_TOKEN=$(echo "$BOOTSTRAP_RESP" | jq -r '.registration_token')
 
 echo ""
 echo "Team API Token: $TOKEN"
-echo "Registration Token: $REG_TOKEN"
 echo ""
 
 # Create app
@@ -116,7 +114,7 @@ echo "=== 5. Start Runner ==="
 mkdir -p /tmp/minitower-demo/runner
 MINITOWER_SERVER_URL=http://localhost:8080 \
 MINITOWER_RUNNER_NAME=demo-runner \
-MINITOWER_REGISTRATION_TOKEN=$REG_TOKEN \
+MINITOWER_RUNNER_REGISTRATION_TOKEN=runner-secret \
 MINITOWER_DATA_DIR=/tmp/minitower-demo/runner \
 MINITOWER_POLL_INTERVAL=2s \
 ./bin/minitower-runner &

@@ -2,7 +2,6 @@ CREATE TABLE IF NOT EXISTS teams (
   id INTEGER PRIMARY KEY,
   slug TEXT NOT NULL,
   name TEXT NOT NULL,
-  registration_token_hash TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   UNIQUE(slug)
@@ -12,6 +11,7 @@ CREATE TABLE IF NOT EXISTS team_tokens (
   id INTEGER PRIMARY KEY,
   team_id INTEGER NOT NULL,
   token_hash TEXT NOT NULL,
+  name TEXT,
   created_at INTEGER NOT NULL,
   revoked_at INTEGER,
   last_used_at INTEGER,
@@ -81,18 +81,15 @@ CREATE TABLE IF NOT EXISTS runs (
 
 CREATE TABLE IF NOT EXISTS runners (
   id INTEGER PRIMARY KEY,
-  team_id INTEGER NOT NULL,
-  name TEXT NOT NULL,
-  environment_id INTEGER NOT NULL,
+  name TEXT NOT NULL UNIQUE,
+  environment TEXT NOT NULL DEFAULT 'default',
   labels_json TEXT,
   token_hash TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'online',
   max_concurrent INTEGER NOT NULL DEFAULT 1,
   last_seen_at INTEGER,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL,
-  UNIQUE(team_id, name),
-  FOREIGN KEY(environment_id, team_id) REFERENCES environments(id, team_id)
+  updated_at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS run_attempts (
@@ -138,7 +135,7 @@ CREATE INDEX IF NOT EXISTS run_attempts_expiry_idx
   WHERE status IN ('leased','running','cancelling');
 
 CREATE INDEX IF NOT EXISTS runs_queue_pick_idx
-  ON runs(team_id, environment_id, status, priority DESC, queued_at ASC, id ASC)
+  ON runs(environment_id, status, priority DESC, queued_at ASC, id ASC)
   WHERE status = 'queued';
 
 CREATE UNIQUE INDEX IF NOT EXISTS apps_id_team_uq

@@ -13,10 +13,9 @@ type bootstrapTeamRequest struct {
 }
 
 type bootstrapTeamResponse struct {
-	TeamID            int64  `json:"team_id"`
-	Slug              string `json:"slug"`
-	RegistrationToken string `json:"registration_token"`
-	Token             string `json:"token"`
+	TeamID int64  `json:"team_id"`
+	Slug   string `json:"slug"`
+	Token  string `json:"token"`
 }
 
 // BootstrapTeam creates the initial team (single-use globally).
@@ -66,15 +65,7 @@ func (h *Handlers) BootstrapTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate registration token
-	regToken, regTokenHash, err := auth.GeneratePrefixedToken(auth.PrefixRegistrationToken)
-	if err != nil {
-		h.logger.Error("generate registration token", "error", err)
-		writeError(w, http.StatusInternalServerError, "internal", "internal error")
-		return
-	}
-
-	team, err := h.store.CreateTeam(r.Context(), req.Slug, req.Name, regTokenHash)
+	team, err := h.store.CreateTeam(r.Context(), req.Slug, req.Name)
 	if err != nil {
 		h.logger.Error("create team", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "internal error")
@@ -98,9 +89,8 @@ func (h *Handlers) BootstrapTeam(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, bootstrapTeamResponse{
-		TeamID:            team.ID,
-		Slug:              team.Slug,
-		RegistrationToken: regToken,
-		Token:             teamToken,
+		TeamID: team.ID,
+		Slug:   team.Slug,
+		Token:  teamToken,
 	})
 }
