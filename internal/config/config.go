@@ -45,25 +45,25 @@ func Load() (Config, error) {
 		MaxArtifactSize:     defaultMaxArtifactSize,
 	}
 
-  if v := strings.TrimSpace(os.Getenv("MINITOWER_LISTEN_ADDR")); v != "" {
-    cfg.ListenAddr = v
-  }
-  if v := strings.TrimSpace(os.Getenv("MINITOWER_DB_PATH")); v != "" {
-    cfg.DBPath = v
-  }
-  if v := strings.TrimSpace(os.Getenv("MINITOWER_OBJECTS_DIR")); v != "" {
-    cfg.ObjectsDir = v
-  }
-  if v := strings.TrimSpace(os.Getenv("MINITOWER_BOOTSTRAP_TOKEN")); v != "" {
-    cfg.BootstrapToken = v
-  }
-  if v := strings.TrimSpace(os.Getenv("MINITOWER_LEASE_TTL")); v != "" {
-    dur, err := time.ParseDuration(v)
-    if err != nil {
-      return cfg, fmt.Errorf("invalid MINITOWER_LEASE_TTL: %w", err)
-    }
-    cfg.LeaseTTL = dur
-  }
+	if v := strings.TrimSpace(os.Getenv("MINITOWER_LISTEN_ADDR")); v != "" {
+		cfg.ListenAddr = v
+	}
+	if v := strings.TrimSpace(os.Getenv("MINITOWER_DB_PATH")); v != "" {
+		cfg.DBPath = v
+	}
+	if v := strings.TrimSpace(os.Getenv("MINITOWER_OBJECTS_DIR")); v != "" {
+		cfg.ObjectsDir = v
+	}
+	if v := strings.TrimSpace(os.Getenv("MINITOWER_BOOTSTRAP_TOKEN")); v != "" {
+		cfg.BootstrapToken = v
+	}
+	if v := strings.TrimSpace(os.Getenv("MINITOWER_LEASE_TTL")); v != "" {
+		dur, err := time.ParseDuration(v)
+		if err != nil {
+			return cfg, fmt.Errorf("invalid MINITOWER_LEASE_TTL: %w", err)
+		}
+		cfg.LeaseTTL = dur
+	}
 	if v := strings.TrimSpace(os.Getenv("MINITOWER_EXPIRY_CHECK_INTERVAL")); v != "" {
 		dur, err := time.ParseDuration(v)
 		if err != nil {
@@ -90,5 +90,5 @@ func Load() (Config, error) {
 		return cfg, errors.New("MINITOWER_BOOTSTRAP_TOKEN is required")
 	}
 
-  return cfg, nil
+	return cfg, nil
 }

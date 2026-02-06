@@ -132,7 +132,7 @@ func (s *Store) reapAttempt(ctx context.Context, attemptID int64, nowMs int64) (
 			return false, err
 		}
 		if affected == 0 {
-			if err := maybeCancelRun(tx, ctx, runID, nowMs); err != nil {
+			if err := maybeCancelRun(ctx, tx, runID, nowMs); err != nil {
 				return false, err
 			}
 		}
@@ -161,7 +161,7 @@ func (s *Store) reapAttempt(ctx context.Context, attemptID int64, nowMs int64) (
 		return false, err
 	}
 	if affected == 0 {
-		if err := maybeCancelRun(tx, ctx, runID, nowMs); err != nil {
+		if err := maybeCancelRun(ctx, tx, runID, nowMs); err != nil {
 			return false, err
 		}
 	}
@@ -189,7 +189,7 @@ func updateAttemptStatus(tx *sql.Tx, attemptID int64, nowMs int64, status string
 	return affected > 0, nil
 }
 
-func maybeCancelRun(tx *sql.Tx, ctx context.Context, runID int64, nowMs int64) error {
+func maybeCancelRun(ctx context.Context, tx *sql.Tx, runID int64, nowMs int64) error {
 	var cancelRequested int
 	err := tx.QueryRowContext(ctx,
 		`SELECT cancel_requested FROM runs WHERE id = ?`,

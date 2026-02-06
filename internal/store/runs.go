@@ -15,6 +15,7 @@ type Run struct {
 	EnvironmentID   int64
 	AppVersionID    int64
 	RunNo           int64
+	VersionNo       int64 // Populated by ListRunsByApp (joined from app_versions)
 	Input           map[string]any
 	Status          string
 	Priority        int
@@ -51,9 +52,15 @@ func (s *Store) CreateRun(ctx context.Context, teamID, appID, envID, versionID i
 		inputJSON = &s
 	}
 
-	// Get next run number for this app
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	// Get next run number for this app (inside transaction to prevent duplicates)
 	var maxRunNo sql.NullInt64
-	err := s.db.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		`SELECT MAX(run_no) FROM runs WHERE app_id = ?`,
 		appID,
 	).Scan(&maxRunNo)
@@ -66,7 +73,7 @@ func (s *Store) CreateRun(ctx context.Context, teamID, appID, envID, versionID i
 		runNo = maxRunNo.Int64 + 1
 	}
 
-	result, err := s.db.ExecContext(ctx,
+	result, err := tx.ExecContext(ctx,
 		`INSERT INTO runs (team_id, app_id, environment_id, app_version_id, run_no, input_json, status, priority, max_retries, retry_count, cancel_requested, queued_at, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, 0, 0, ?, ?, ?)`,
 		teamID, appID, envID, versionID, runNo, inputJSON, priority, maxRetries, now, now, now,
@@ -77,6 +84,10 @@ func (s *Store) CreateRun(ctx context.Context, teamID, appID, envID, versionID i
 
 	id, err := result.LastInsertId()
 	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 
@@ -178,11 +189,17 @@ func (s *Store) GetRunByAppAndRunNo(ctx context.Context, teamID, appID, runNo in
 	return &r, nil
 }
 
-// ListRunsByApp returns all runs for an app.
+// ListRunsByApp returns all runs for an app, joining version_no to avoid N+1 queries.
 func (s *Store) ListRunsByApp(ctx context.Context, teamID, appID int64, limit, offset int) ([]*Run, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, team_id, app_id, environment_id, app_version_id, run_no, input_json, status, priority, max_retries, retry_count, cancel_requested, queued_at, started_at, finished_at, created_at, updated_at
-     FROM runs WHERE team_id = ? AND app_id = ? ORDER BY run_no DESC LIMIT ? OFFSET ?`,
+		`SELECT r.id, r.team_id, r.app_id, r.environment_id, r.app_version_id, r.run_no,
+            r.input_json, r.status, r.priority, r.max_retries, r.retry_count,
+            r.cancel_requested, r.queued_at, r.started_at, r.finished_at,
+            r.created_at, r.updated_at, v.version_no
+     FROM runs r
+     JOIN app_versions v ON r.app_version_id = v.id
+     WHERE r.team_id = ? AND r.app_id = ?
+     ORDER BY r.run_no DESC LIMIT ? OFFSET ?`,
 		teamID, appID, limit, offset,
 	)
 	if err != nil {
@@ -197,10 +214,12 @@ func (s *Store) ListRunsByApp(ctx context.Context, teamID, appID int64, limit, o
 		var queuedAt, createdAt, updatedAt int64
 		var startedAt, finishedAt sql.NullInt64
 		var cancelRequested int
-		if err := rows.Scan(&r.ID, &r.TeamID, &r.AppID, &r.EnvironmentID, &r.AppVersionID, &r.RunNo, &inputJSON, &r.Status, &r.Priority, &r.MaxRetries, &r.RetryCount, &cancelRequested, &queuedAt, &startedAt, &finishedAt, &createdAt, &updatedAt); err != nil {
+		var versionNo int64
+		if err := rows.Scan(&r.ID, &r.TeamID, &r.AppID, &r.EnvironmentID, &r.AppVersionID, &r.RunNo, &inputJSON, &r.Status, &r.Priority, &r.MaxRetries, &r.RetryCount, &cancelRequested, &queuedAt, &startedAt, &finishedAt, &createdAt, &updatedAt, &versionNo); err != nil {
 			return nil, err
 		}
 		r.CancelRequested = cancelRequested == 1
+		r.VersionNo = versionNo
 		r.QueuedAt = time.UnixMilli(queuedAt)
 		r.CreatedAt = time.UnixMilli(createdAt)
 		r.UpdatedAt = time.UnixMilli(updatedAt)
@@ -222,15 +241,16 @@ func (s *Store) ListRunsByApp(ctx context.Context, teamID, appID int64, limit, o
 	return runs, rows.Err()
 }
 
-// GetRunLogs returns all logs for the latest attempt of a run.
+// GetRunLogs returns logs for the latest attempt of a run.
 func (s *Store) GetRunLogs(ctx context.Context, runID int64) ([]*RunLog, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT l.id, l.run_attempt_id, l.seq, l.stream, l.line, l.logged_at
      FROM run_logs l
      JOIN run_attempts a ON l.run_attempt_id = a.id
      WHERE a.run_id = ?
-     ORDER BY a.attempt_no DESC, l.seq ASC`,
-		runID,
+       AND a.attempt_no = (SELECT MAX(attempt_no) FROM run_attempts WHERE run_id = ?)
+     ORDER BY l.seq ASC`,
+		runID, runID,
 	)
 	if err != nil {
 		return nil, err

@@ -42,24 +42,24 @@ func ArtifactBodyLimitMiddleware(maxArtifactBytes, maxDefaultBytes int64) Middle
 }
 
 func Chain(handler http.Handler, middleware ...Middleware) http.Handler {
-  wrapped := handler
-  for i := len(middleware) - 1; i >= 0; i-- {
-    wrapped = middleware[i](wrapped)
-  }
-  return wrapped
+	wrapped := handler
+	for i := len(middleware) - 1; i >= 0; i-- {
+		wrapped = middleware[i](wrapped)
+	}
+	return wrapped
 }
 
 func Recoverer(logger *slog.Logger) Middleware {
-  return func(next http.Handler) http.Handler {
-    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-      defer func() {
-        if recovered := recover(); recovered != nil {
-          logger.Error("panic", "error", recovered)
-          writeError(w, http.StatusInternalServerError, "internal", "internal error")
-        }
-      }()
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					logger.Error("panic", "error", recovered)
+					writeError(w, http.StatusInternalServerError, "internal", "internal error")
+				}
+			}()
 
-      next.ServeHTTP(w, r)
-    })
-  }
+			next.ServeHTTP(w, r)
+		})
+	}
 }
