@@ -29,12 +29,15 @@ func TestReapExpiredRequeueThenDead(t *testing.T) {
 	_, attempt1, _, _ := testutil.LeaseRun(t, s, runner)
 	expireAttempt(t, dbConn, attempt1.ID, time.Now().Add(-2*time.Minute))
 
-	processed, err := s.ReapExpiredAttempts(ctx, time.Now(), 10)
+	results, err := s.ReapExpiredAttempts(ctx, time.Now(), 10)
 	if err != nil {
 		t.Fatalf("reap attempts: %v", err)
 	}
-	if processed != 1 {
-		t.Fatalf("expected 1 processed attempt, got %d", processed)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Outcome != "retried" {
+		t.Fatalf("expected retried, got %s", results[0].Outcome)
 	}
 
 	assertAttemptStatus(t, dbConn, attempt1.ID, "expired")
@@ -52,12 +55,15 @@ func TestReapExpiredRequeueThenDead(t *testing.T) {
 	_, attempt2, _, _ := testutil.LeaseRun(t, s, runner)
 	expireAttempt(t, dbConn, attempt2.ID, time.Now().Add(-2*time.Minute))
 
-	processed, err = s.ReapExpiredAttempts(ctx, time.Now(), 10)
+	results, err = s.ReapExpiredAttempts(ctx, time.Now(), 10)
 	if err != nil {
 		t.Fatalf("reap attempts: %v", err)
 	}
-	if processed != 1 {
-		t.Fatalf("expected 1 processed attempt, got %d", processed)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Outcome != "dead" {
+		t.Fatalf("expected dead, got %s", results[0].Outcome)
 	}
 
 	assertAttemptStatus(t, dbConn, attempt2.ID, "expired")
@@ -92,12 +98,15 @@ func TestReapExpiredCancelRequested(t *testing.T) {
 	expireAttempt(t, dbConn, attempt.ID, time.Now().Add(-2*time.Minute))
 	mustExec(t, dbConn, `UPDATE runs SET cancel_requested = 1 WHERE id = ?`, run.ID)
 
-	processed, err := s.ReapExpiredAttempts(ctx, time.Now(), 10)
+	results, err := s.ReapExpiredAttempts(ctx, time.Now(), 10)
 	if err != nil {
 		t.Fatalf("reap attempts: %v", err)
 	}
-	if processed != 1 {
-		t.Fatalf("expected 1 processed attempt, got %d", processed)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Outcome != "cancelled" {
+		t.Fatalf("expected cancelled, got %s", results[0].Outcome)
 	}
 
 	assertAttemptStatus(t, dbConn, attempt.ID, "cancelled")
@@ -130,12 +139,12 @@ func TestReapExpiredCancellingAttempt(t *testing.T) {
 	mustExec(t, dbConn, `UPDATE run_attempts SET status = 'cancelling' WHERE id = ?`, attempt.ID)
 	mustExec(t, dbConn, `UPDATE runs SET status = 'cancelling' WHERE id = ?`, run.ID)
 
-	processed, err := s.ReapExpiredAttempts(ctx, time.Now(), 10)
+	results, err := s.ReapExpiredAttempts(ctx, time.Now(), 10)
 	if err != nil {
 		t.Fatalf("reap attempts: %v", err)
 	}
-	if processed != 1 {
-		t.Fatalf("expected 1 processed attempt, got %d", processed)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
 	}
 
 	assertAttemptStatus(t, dbConn, attempt.ID, "cancelled")

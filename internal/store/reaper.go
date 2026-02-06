@@ -9,8 +9,15 @@ import (
 
 const defaultReapLimit = 100
 
+// ReapResult describes what happened to a single reaped attempt.
+type ReapResult struct {
+	TeamID int64
+	AppID  int64
+	Outcome string // "retried", "dead", "cancelled"
+}
+
 // ReapExpiredAttempts processes expired leases and applies retry/dead/cancel rules.
-func (s *Store) ReapExpiredAttempts(ctx context.Context, now time.Time, limit int) (int, error) {
+func (s *Store) ReapExpiredAttempts(ctx context.Context, now time.Time, limit int) ([]ReapResult, error) {
 	if limit <= 0 {
 		limit = defaultReapLimit
 	}
@@ -26,7 +33,7 @@ func (s *Store) ReapExpiredAttempts(ctx context.Context, now time.Time, limit in
 		nowMs, limit,
 	)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -34,32 +41,32 @@ func (s *Store) ReapExpiredAttempts(ctx context.Context, now time.Time, limit in
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
-			return 0, err
+			return nil, err
 		}
 		attemptIDs = append(attemptIDs, id)
 	}
 	if err := rows.Err(); err != nil {
-		return 0, err
+		return nil, err
 	}
 
-	processed := 0
+	var results []ReapResult
 	for _, attemptID := range attemptIDs {
-		updated, err := s.reapAttempt(ctx, attemptID, nowMs)
+		result, err := s.reapAttempt(ctx, attemptID, nowMs)
 		if err != nil {
-			return processed, err
+			return results, err
 		}
-		if updated {
-			processed++
+		if result != nil {
+			results = append(results, *result)
 		}
 	}
 
-	return processed, nil
+	return results, nil
 }
 
-func (s *Store) reapAttempt(ctx context.Context, attemptID int64, nowMs int64) (bool, error) {
+func (s *Store) reapAttempt(ctx context.Context, attemptID int64, nowMs int64) (*ReapResult, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	defer tx.Rollback()
 
@@ -70,26 +77,28 @@ func (s *Store) reapAttempt(ctx context.Context, attemptID int64, nowMs int64) (
 	var cancelRequested int
 	var retryCount int
 	var maxRetries int
+	var teamID int64
+	var appID int64
 
 	err = tx.QueryRowContext(ctx,
-		`SELECT a.run_id, a.status, a.lease_expires_at, r.status, r.cancel_requested, r.retry_count, r.max_retries
+		`SELECT a.run_id, a.status, a.lease_expires_at, r.status, r.cancel_requested, r.retry_count, r.max_retries, r.team_id, r.app_id
      FROM run_attempts a
      JOIN runs r ON r.id = a.run_id
      WHERE a.id = ?`,
 		attemptID,
-	).Scan(&runID, &attemptStatus, &leaseExpiresAt, &runStatus, &cancelRequested, &retryCount, &maxRetries)
+	).Scan(&runID, &attemptStatus, &leaseExpiresAt, &runStatus, &cancelRequested, &retryCount, &maxRetries, &teamID, &appID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+		return nil, nil
 	}
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 
 	if leaseExpiresAt > nowMs {
-		return false, nil
+		return nil, nil
 	}
 	if attemptStatus != "leased" && attemptStatus != "running" && attemptStatus != "cancelling" {
-		return false, nil
+		return nil, nil
 	}
 
 	cancelPath := cancelRequested == 1 || attemptStatus == "cancelling" || runStatus == "cancelling"
@@ -97,7 +106,7 @@ func (s *Store) reapAttempt(ctx context.Context, attemptID int64, nowMs int64) (
 	if cancelPath {
 		attemptUpdated, err := updateAttemptStatus(tx, attemptID, nowMs, "cancelled")
 		if err != nil {
-			return false, err
+			return nil, err
 		}
 		_, err = tx.ExecContext(ctx,
 			`UPDATE runs SET status = 'cancelled', finished_at = ?, updated_at = ?
@@ -105,18 +114,21 @@ func (s *Store) reapAttempt(ctx context.Context, attemptID int64, nowMs int64) (
 			nowMs, nowMs, runID,
 		)
 		if err != nil {
-			return false, err
+			return nil, err
 		}
 		if err := tx.Commit(); err != nil {
-			return false, err
+			return nil, err
 		}
-		return attemptUpdated, nil
+		if attemptUpdated {
+			return &ReapResult{TeamID: teamID, AppID: appID, Outcome: "cancelled"}, nil
+		}
+		return nil, nil
 	}
 
 	if retryCount < maxRetries {
 		attemptUpdated, err := updateAttemptStatus(tx, attemptID, nowMs, "expired")
 		if err != nil {
-			return false, err
+			return nil, err
 		}
 
 		result, err := tx.ExecContext(ctx,
@@ -125,27 +137,30 @@ func (s *Store) reapAttempt(ctx context.Context, attemptID int64, nowMs int64) (
 			nowMs, nowMs, runID,
 		)
 		if err != nil {
-			return false, err
+			return nil, err
 		}
 		affected, err := result.RowsAffected()
 		if err != nil {
-			return false, err
+			return nil, err
 		}
 		if affected == 0 {
 			if err := maybeCancelRun(ctx, tx, runID, nowMs); err != nil {
-				return false, err
+				return nil, err
 			}
 		}
 
 		if err := tx.Commit(); err != nil {
-			return false, err
+			return nil, err
 		}
-		return attemptUpdated, nil
+		if attemptUpdated {
+			return &ReapResult{TeamID: teamID, AppID: appID, Outcome: "retried"}, nil
+		}
+		return nil, nil
 	}
 
 	attemptUpdated, err := updateAttemptStatus(tx, attemptID, nowMs, "expired")
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 
 	result, err := tx.ExecContext(ctx,
@@ -154,23 +169,26 @@ func (s *Store) reapAttempt(ctx context.Context, attemptID int64, nowMs int64) (
 		nowMs, nowMs, runID,
 	)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	if affected == 0 {
 		if err := maybeCancelRun(ctx, tx, runID, nowMs); err != nil {
-			return false, err
+			return nil, err
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return false, err
+		return nil, err
 	}
 
-	return attemptUpdated, nil
+	if attemptUpdated {
+		return &ReapResult{TeamID: teamID, AppID: appID, Outcome: "dead"}, nil
+	}
+	return nil, nil
 }
 
 func updateAttemptStatus(tx *sql.Tx, attemptID int64, nowMs int64, status string) (bool, error) {

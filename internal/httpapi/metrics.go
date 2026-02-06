@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"database/sql"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -17,17 +18,45 @@ var (
 	slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$`)
 )
 
-// Metrics holds Prometheus collectors for HTTP metrics.
+// Metrics holds Prometheus collectors for HTTP and domain metrics.
 type Metrics struct {
+	reg      prometheus.Registerer
+	gatherer prometheus.Gatherer
+
+	// HTTP metrics
 	requestsTotal   *prometheus.CounterVec
 	requestDuration *prometheus.HistogramVec
 	requestSize     *prometheus.HistogramVec
 	responseSize    *prometheus.HistogramVec
+
+	// Domain counters
+	runsCreated      *prometheus.CounterVec
+	runsCompleted    *prometheus.CounterVec
+	runsRetried      *prometheus.CounterVec
+	runsLeased       *prometheus.CounterVec
+	runnersRegistered *prometheus.CounterVec
+
+	// Domain histograms
+	runQueueWait   *prometheus.HistogramVec
+	runExecution   *prometheus.HistogramVec
+	runTotal       *prometheus.HistogramVec
 }
 
 // NewMetrics creates a new Metrics instance with registered collectors.
-func NewMetrics(reg prometheus.Registerer) *Metrics {
+func NewMetrics(reg prometheus.Registerer, db *sql.DB) *Metrics {
+	// Determine the gatherer from the registerer.
+	// If it's a *prometheus.Registry, use it directly; otherwise fall back to DefaultGatherer.
+	var gatherer prometheus.Gatherer
+	if g, ok := reg.(prometheus.Gatherer); ok {
+		gatherer = g
+	} else {
+		gatherer = prometheus.DefaultGatherer
+	}
+
 	m := &Metrics{
+		reg:      reg,
+		gatherer: gatherer,
+
 		requestsTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "minitower_http_requests_total",
@@ -47,7 +76,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			prometheus.HistogramOpts{
 				Name:    "minitower_http_request_size_bytes",
 				Help:    "HTTP request body size in bytes.",
-				Buckets: prometheus.ExponentialBuckets(100, 10, 8), // 100B to 1GB
+				Buckets: prometheus.ExponentialBuckets(100, 10, 8),
 			},
 			[]string{"method", "path"},
 		),
@@ -55,19 +84,125 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			prometheus.HistogramOpts{
 				Name:    "minitower_http_response_size_bytes",
 				Help:    "HTTP response body size in bytes.",
-				Buckets: prometheus.ExponentialBuckets(100, 10, 8), // 100B to 1GB
+				Buckets: prometheus.ExponentialBuckets(100, 10, 8),
 			},
 			[]string{"method", "path"},
 		),
+
+		// Domain counters
+		runsCreated: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "minitower_runs_created_total",
+				Help: "Total runs created, by team and app.",
+			},
+			[]string{"team", "app"},
+		),
+		runsCompleted: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "minitower_runs_completed_total",
+				Help: "Total runs completed, by team, app, and terminal status.",
+			},
+			[]string{"team", "app", "status"},
+		),
+		runsRetried: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "minitower_runs_retried_total",
+				Help: "Total runs re-queued by the reaper, by team and app.",
+			},
+			[]string{"team", "app"},
+		),
+		runsLeased: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "minitower_runs_leased_total",
+				Help: "Total runs leased by runners, by environment.",
+			},
+			[]string{"environment"},
+		),
+		runnersRegistered: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "minitower_runners_registered_total",
+				Help: "Total runners registered, by environment.",
+			},
+			[]string{"environment"},
+		),
+
+		// Domain histograms
+		runQueueWait: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "minitower_run_queue_wait_seconds",
+				Help:    "Time a run spent queued (started_at - queued_at).",
+				Buckets: prometheus.ExponentialBuckets(0.1, 2, 15), // 0.1s to ~1638s
+			},
+			[]string{"team", "app"},
+		),
+		runExecution: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "minitower_run_execution_seconds",
+				Help:    "Run execution duration (finished_at - started_at).",
+				Buckets: prometheus.ExponentialBuckets(0.1, 2, 15),
+			},
+			[]string{"team", "app", "status"},
+		),
+		runTotal: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "minitower_run_total_seconds",
+				Help:    "Total run duration (finished_at - queued_at).",
+				Buckets: prometheus.ExponentialBuckets(0.1, 2, 15),
+			},
+			[]string{"team", "app", "status"},
+		),
 	}
 
-	reg.MustRegister(m.requestsTotal, m.requestDuration, m.requestSize, m.responseSize)
+	reg.MustRegister(
+		m.requestsTotal, m.requestDuration, m.requestSize, m.responseSize,
+		m.runsCreated, m.runsCompleted, m.runsRetried, m.runsLeased, m.runnersRegistered,
+		m.runQueueWait, m.runExecution, m.runTotal,
+	)
+
+	if db != nil {
+		reg.MustRegister(NewDomainCollector(db))
+	}
+
 	return m
 }
 
 // Handler returns the Prometheus metrics HTTP handler.
 func (m *Metrics) Handler() http.Handler {
-	return promhttp.Handler()
+	return promhttp.HandlerFor(m.gatherer, promhttp.HandlerOpts{})
+}
+
+// --- DomainMetrics interface implementation ---
+
+func (m *Metrics) RunCreated(team, app string) {
+	m.runsCreated.WithLabelValues(team, app).Inc()
+}
+
+func (m *Metrics) RunCompleted(team, app, status string) {
+	m.runsCompleted.WithLabelValues(team, app, status).Inc()
+}
+
+func (m *Metrics) RunRetried(team, app string) {
+	m.runsRetried.WithLabelValues(team, app).Inc()
+}
+
+func (m *Metrics) RunLeased(environment string) {
+	m.runsLeased.WithLabelValues(environment).Inc()
+}
+
+func (m *Metrics) RunnerRegistered(environment string) {
+	m.runnersRegistered.WithLabelValues(environment).Inc()
+}
+
+func (m *Metrics) ObserveQueueWait(team, app string, seconds float64) {
+	m.runQueueWait.WithLabelValues(team, app).Observe(seconds)
+}
+
+func (m *Metrics) ObserveExecution(team, app, status string, seconds float64) {
+	m.runExecution.WithLabelValues(team, app, status).Observe(seconds)
+}
+
+func (m *Metrics) ObserveTotal(team, app, status string, seconds float64) {
+	m.runTotal.WithLabelValues(team, app, status).Observe(seconds)
 }
 
 // Middleware returns an HTTP middleware that records metrics.

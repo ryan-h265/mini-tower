@@ -152,6 +152,9 @@ func (h *Handlers) CreateRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	teamSlug, _ := teamSlugFromContext(r.Context())
+	h.metrics.RunCreated(teamSlug, slug)
+
 	writeJSON(w, http.StatusCreated, runResponse{
 		RunID:           run.ID,
 		AppID:           run.AppID,
@@ -338,6 +341,20 @@ func (h *Handlers) CancelRun(w http.ResponseWriter, r *http.Request) {
 	if run == nil {
 		writeError(w, http.StatusNotFound, "not_found", "run not found")
 		return
+	}
+
+	// Emit metrics if run went to a terminal state (cancelled from queued)
+	if run.Status == "cancelled" {
+		teamSlug, _ := teamSlugFromContext(r.Context())
+		app, _ := h.store.GetAppByIDDirect(r.Context(), run.AppID)
+		appSlug := ""
+		if app != nil {
+			appSlug = app.Slug
+		}
+		h.metrics.RunCompleted(teamSlug, appSlug, run.Status)
+		if run.FinishedAt != nil {
+			h.metrics.ObserveTotal(teamSlug, appSlug, run.Status, run.FinishedAt.Sub(run.QueuedAt).Seconds())
+		}
 	}
 
 	v, err := h.store.GetVersionByID(r.Context(), run.AppVersionID)

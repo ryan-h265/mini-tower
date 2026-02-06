@@ -55,6 +55,7 @@ func main() {
 	}
 
 	api := httpapi.New(cfg, dbConn, objectStore, logger)
+	metrics := api.Metrics()
 
 	reaper := store.New(dbConn)
 	if cfg.ExpiryCheckInterval > 0 {
@@ -68,13 +69,33 @@ func main() {
 				case <-ticker.C:
 				}
 
-				processed, err := reaper.ReapExpiredAttempts(ctx, time.Now(), 100)
+				results, err := reaper.ReapExpiredAttempts(ctx, time.Now(), 100)
 				if err != nil {
 					logger.Error("expiry reaper error", "error", err)
 					continue
 				}
-				if processed > 0 {
-					logger.Info("expiry reaper processed attempts", "count", processed)
+				if len(results) > 0 {
+					logger.Info("expiry reaper processed attempts", "count", len(results))
+				}
+
+				for _, r := range results {
+					team, _ := reaper.GetTeamByID(ctx, r.TeamID)
+					app, _ := reaper.GetAppByIDDirect(ctx, r.AppID)
+					teamSlug := ""
+					appSlug := ""
+					if team != nil {
+						teamSlug = team.Slug
+					}
+					if app != nil {
+						appSlug = app.Slug
+					}
+
+					switch r.Outcome {
+					case "retried":
+						metrics.RunRetried(teamSlug, appSlug)
+					case "dead", "cancelled":
+						metrics.RunCompleted(teamSlug, appSlug, r.Outcome)
+					}
 				}
 			}
 		}()

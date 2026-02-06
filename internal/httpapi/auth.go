@@ -48,11 +48,12 @@ func (a *Auth) RequireTeam(next http.Handler) http.Handler {
 
 		var tokenID int64
 		var teamID int64
+		var teamSlug string
 		err := a.db.QueryRowContext(
 			r.Context(),
-			`SELECT id, team_id FROM team_tokens WHERE token_hash = ? AND revoked_at IS NULL LIMIT 1`,
+			`SELECT tt.id, tt.team_id, t.slug FROM team_tokens tt JOIN teams t ON tt.team_id = t.id WHERE tt.token_hash = ? AND tt.revoked_at IS NULL LIMIT 1`,
 			tokenHash,
-		).Scan(&tokenID, &teamID)
+		).Scan(&tokenID, &teamID, &teamSlug)
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or missing token")
 			return
@@ -64,6 +65,7 @@ func (a *Auth) RequireTeam(next http.Handler) http.Handler {
 
 		ctx := handlers.WithTeamID(r.Context(), teamID)
 		ctx = handlers.WithTeamTokenID(ctx, tokenID)
+		ctx = handlers.WithTeamSlug(ctx, teamSlug)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

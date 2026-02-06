@@ -117,6 +117,8 @@ func (h *Handlers) RegisterRunner(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.metrics.RunnerRegistered(environment)
+
 	writeJSON(w, http.StatusCreated, registerRunnerResponse{
 		RunnerID: runner.ID,
 		Name:     runner.Name,
@@ -182,6 +184,8 @@ func (h *Handlers) LeaseRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}
+
+	h.metrics.RunLeased(environment)
 
 	// Get app and version details
 	app, err := h.store.GetAppByIDDirect(r.Context(), run.AppID)
@@ -347,7 +351,7 @@ func (h *Handlers) SubmitResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, attempt, leaseTokenHash, ok := h.requireLeaseContext(w, r, extractRunIDFromPath)
+	runID, attempt, leaseTokenHash, ok := h.requireLeaseContext(w, r, extractRunIDFromPath)
 	if !ok {
 		return
 	}
@@ -372,6 +376,20 @@ func (h *Handlers) SubmitResult(w http.ResponseWriter, r *http.Request) {
 	err := h.store.CompleteAttempt(r.Context(), attempt.ID, leaseTokenHash, req.Status, req.ExitCode, req.ErrorMessage)
 	if writeStoreError(w, h.logger, err, "result conflicts with attempt state") {
 		return
+	}
+
+	// Emit domain metrics
+	if run, lookupErr := h.store.GetRunByIDDirect(r.Context(), runID); lookupErr == nil && run != nil {
+		if app, appErr := h.store.GetAppByIDDirect(r.Context(), run.AppID); appErr == nil && app != nil {
+			if team, teamErr := h.store.GetTeamByID(r.Context(), run.TeamID); teamErr == nil && team != nil {
+				h.metrics.RunCompleted(team.Slug, app.Slug, req.Status)
+				if run.StartedAt != nil && run.FinishedAt != nil {
+					h.metrics.ObserveQueueWait(team.Slug, app.Slug, run.StartedAt.Sub(run.QueuedAt).Seconds())
+					h.metrics.ObserveExecution(team.Slug, app.Slug, req.Status, run.FinishedAt.Sub(*run.StartedAt).Seconds())
+					h.metrics.ObserveTotal(team.Slug, app.Slug, req.Status, run.FinishedAt.Sub(run.QueuedAt).Seconds())
+				}
+			}
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

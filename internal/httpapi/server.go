@@ -23,6 +23,7 @@ type Server struct {
 	handlers *handlers.Handlers
 	logger   *slog.Logger
 	metrics  *Metrics
+	promReg  prometheus.Registerer
 }
 
 // ServerOption configures a Server.
@@ -31,7 +32,7 @@ type ServerOption func(*Server)
 // WithPrometheusRegisterer sets a custom prometheus registerer (for testing).
 func WithPrometheusRegisterer(reg prometheus.Registerer) ServerOption {
 	return func(s *Server) {
-		s.metrics = NewMetrics(reg)
+		s.promReg = reg
 	}
 }
 
@@ -41,23 +42,27 @@ func New(cfg config.Config, db *sql.DB, objects *objects.LocalStore, logger *slo
 	}
 
 	s := &Server{
-		cfg:      cfg,
-		db:       db,
-		mux:      http.NewServeMux(),
-		auth:     NewAuth(cfg, db),
-		handlers: handlers.New(cfg, db, objects, logger),
-		logger:   logger,
+		cfg:    cfg,
+		db:     db,
+		mux:    http.NewServeMux(),
+		auth:   NewAuth(cfg, db),
+		logger: logger,
 	}
 
-	// Apply options before creating metrics (allows custom registry)
+	// Apply options (may set promReg)
 	for _, opt := range opts {
 		opt(s)
 	}
 
-	// Create metrics with default registry if not set by option
-	if s.metrics == nil {
-		s.metrics = NewMetrics(prometheus.DefaultRegisterer)
+	// Create metrics with the chosen registry
+	if s.promReg != nil {
+		s.metrics = NewMetrics(s.promReg, db)
+	} else {
+		s.metrics = NewMetrics(prometheus.DefaultRegisterer, db)
 	}
+
+	// Create handlers with metrics
+	s.handlers = handlers.New(cfg, db, objects, logger, s.metrics)
 
 	s.routes()
 	s.handler = Chain(
@@ -71,6 +76,11 @@ func New(cfg config.Config, db *sql.DB, objects *objects.LocalStore, logger *slo
 
 func (s *Server) Handler() http.Handler {
 	return s.handler
+}
+
+// Metrics returns the server's Metrics instance.
+func (s *Server) Metrics() *Metrics {
+	return s.metrics
 }
 
 func (s *Server) routes() {

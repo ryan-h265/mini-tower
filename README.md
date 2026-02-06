@@ -165,6 +165,75 @@ curl -sS http://localhost:8080/api/v1/runs/1/logs -H "Authorization: Bearer $TEA
 - `POST /api/v1/runs/{run}/result` — Submit terminal result
 - `GET /api/v1/runs/{run}/artifact` — Download version artifact
 
+## Monitoring & Metrics
+
+MiniTower exposes Prometheus metrics at `GET /metrics`. Metrics are divided into HTTP-level and domain-level categories.
+
+### HTTP Metrics
+
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `minitower_http_requests_total` | method, path, status | Total HTTP requests |
+| `minitower_http_request_duration_seconds` | method, path | Request latency histogram |
+| `minitower_http_request_size_bytes` | method, path | Request body size histogram |
+| `minitower_http_response_size_bytes` | method, path | Response body size histogram |
+
+### Domain Metrics — Counters
+
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `minitower_runs_created_total` | team, app | Runs created |
+| `minitower_runs_completed_total` | team, app, status | Runs reaching a terminal state |
+| `minitower_runs_retried_total` | team, app | Runs re-queued by the reaper |
+| `minitower_runs_leased_total` | environment | Runs leased by runners |
+| `minitower_runners_registered_total` | environment | Runners registered |
+
+### Domain Metrics — Histograms
+
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `minitower_run_queue_wait_seconds` | team, app | Time spent queued (started_at - queued_at) |
+| `minitower_run_execution_seconds` | team, app, status | Execution duration (finished_at - started_at) |
+| `minitower_run_total_seconds` | team, app, status | Total duration (finished_at - queued_at) |
+
+### Domain Metrics — Gauges
+
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `minitower_runs_pending` | team, app, environment | Current queued run count |
+| `minitower_runners_online` | environment | Current online runner count |
+
+### Prometheus Scrape Config
+
+```yaml
+scrape_configs:
+  - job_name: minitower
+    static_configs:
+      - targets: ['localhost:8080']
+```
+
+### Example PromQL Queries
+
+```promql
+# Run creation rate (per second, 5m window)
+rate(minitower_runs_created_total[5m])
+
+# Failure rate by app
+rate(minitower_runs_completed_total{status="failed"}[5m])
+
+# Queue depth
+minitower_runs_pending
+
+# p99 execution time
+histogram_quantile(0.99, rate(minitower_run_execution_seconds_bucket[5m]))
+```
+
+### Quick Check
+
+```bash
+curl -s localhost:8080/metrics | grep minitower_runs
+```
+
 ## How It Works
 
 **Artifacts**: A version artifact is a `.tar.gz` containing your Python code. If `requirements.txt` is present, dependencies are installed into an isolated virtual environment before execution. Artifacts are SHA-256 verified on download.

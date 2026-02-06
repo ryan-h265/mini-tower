@@ -301,7 +301,7 @@ func TestLateResultAfterExpiryReturnsGone(t *testing.T) {
 	}
 
 	mustExecHTTP(t, dbConn, `UPDATE run_attempts SET lease_expires_at = ? WHERE id = ?`, time.Now().Add(-2*time.Minute).UnixMilli(), attempt.ID)
-	if _, err := s.ReapExpiredAttempts(ctx, time.Now(), 10); err != nil {
+	if _, err = s.ReapExpiredAttempts(ctx, time.Now(), 10); err != nil {
 		t.Fatalf("reap attempts: %v", err)
 	}
 
