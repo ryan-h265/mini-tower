@@ -124,6 +124,38 @@ func (s *Store) GetRunnerByName(ctx context.Context, name string) (*Runner, erro
 	return &r, nil
 }
 
+// ListRunners returns all runners, ordered by name.
+func (s *Store) ListRunners(ctx context.Context) ([]*Runner, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, name, environment, token_hash, status, max_concurrent, last_seen_at, created_at, updated_at
+	     FROM runners
+	     ORDER BY name ASC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	runners := make([]*Runner, 0)
+	for rows.Next() {
+		var r Runner
+		var createdAt, updatedAt int64
+		var lastSeenAt sql.NullInt64
+		if err := rows.Scan(&r.ID, &r.Name, &r.Environment, &r.TokenHash, &r.Status, &r.MaxConcurrent, &lastSeenAt, &createdAt, &updatedAt); err != nil {
+			return nil, err
+		}
+		r.CreatedAt = time.UnixMilli(createdAt)
+		r.UpdatedAt = time.UnixMilli(updatedAt)
+		if lastSeenAt.Valid {
+			t := time.UnixMilli(lastSeenAt.Int64)
+			r.LastSeenAt = &t
+		}
+		runners = append(runners, &r)
+	}
+
+	return runners, rows.Err()
+}
+
 // UpdateRunnerLastSeen updates the runner's last seen timestamp.
 func (s *Store) UpdateRunnerLastSeen(ctx context.Context, runnerID int64) error {
 	now := time.Now().UnixMilli()

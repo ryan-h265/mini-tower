@@ -49,6 +49,10 @@ func (c *dbCleanup) Close(t *testing.T) {
 }
 
 func CreateTeam(t *testing.T, s *store.Store, slug string) (*store.Team, string) {
+	return CreateTeamWithRole(t, s, slug, "admin")
+}
+
+func CreateTeamWithRole(t *testing.T, s *store.Store, slug, role string) (*store.Team, string) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -62,7 +66,7 @@ func CreateTeam(t *testing.T, s *store.Store, slug string) (*store.Team, string)
 		t.Fatalf("generate team token: %v", err)
 	}
 
-	if _, err := s.CreateTeamToken(ctx, team.ID, teamTokenHash, nil); err != nil {
+	if _, err := s.CreateTeamToken(ctx, team.ID, teamTokenHash, nil, role); err != nil {
 		t.Fatalf("create team token: %v", err)
 	}
 

@@ -67,6 +67,7 @@ func New(cfg config.Config, db *sql.DB, objects *objects.LocalStore, logger *slo
 	s.routes()
 	s.handler = Chain(
 		s.mux,
+		CORSMiddleware(cfg.CORSOrigins),
 		Recoverer(logger),
 		s.metrics.Middleware(),
 		ArtifactBodyLimitMiddleware(cfg.MaxArtifactSize, cfg.MaxRequestBodySize),
@@ -104,9 +105,13 @@ func (s *Server) routes() {
 	s.mux.Handle("/api/v1/runs/lease", s.auth.RequireRunner(http.HandlerFunc(s.handlers.LeaseRun)))
 
 	// Team API (team token auth)
+	s.mux.Handle("/api/v1/me", s.auth.RequireTeam(http.HandlerFunc(s.handlers.GetMe)))
 	s.mux.Handle("/api/v1/tokens", s.auth.RequireTeam(http.HandlerFunc(s.handlers.CreateToken)))
 	s.mux.Handle("/api/v1/apps", s.auth.RequireTeam(http.HandlerFunc(s.routeApps)))
 	s.mux.Handle("/api/v1/apps/", s.auth.RequireTeam(http.HandlerFunc(s.routeAppsWithSlug)))
+	s.mux.Handle("/api/v1/runs/summary", s.auth.RequireTeam(http.HandlerFunc(s.handlers.GetRunsSummary)))
+	s.mux.Handle("/api/v1/runs", s.auth.RequireTeam(http.HandlerFunc(s.handlers.ListRunsByTeam)))
+	s.mux.Handle("/api/v1/admin/runners", s.auth.RequireAdmin(http.HandlerFunc(s.handlers.ListRunners)))
 
 	// Runs - mixed auth depending on method/path
 	s.mux.HandleFunc("/api/v1/runs/", s.routeRunsMixed)

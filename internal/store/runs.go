@@ -12,6 +12,7 @@ type Run struct {
 	ID              int64
 	TeamID          int64
 	AppID           int64
+	AppSlug         string // Populated by ListRunsByTeam.
 	EnvironmentID   int64
 	AppVersionID    int64
 	RunNo           int64
@@ -36,6 +37,13 @@ type RunLog struct {
 	Stream       string
 	Line         string
 	LoggedAt     time.Time
+}
+
+type RunSummary struct {
+	TotalRuns    int64
+	ActiveRuns   int64
+	QueuedRuns   int64
+	TerminalRuns int64
 }
 
 // CreateRun creates a new run in queued state.
@@ -281,16 +289,134 @@ func (s *Store) ListRunsByApp(ctx context.Context, teamID, appID int64, limit, o
 	return runs, rows.Err()
 }
 
-// GetRunLogs returns logs for the latest attempt of a run.
-func (s *Store) GetRunLogs(ctx context.Context, runID int64) ([]*RunLog, error) {
+// ListRunsByTeam returns runs for a team with optional status and app slug filters.
+func (s *Store) ListRunsByTeam(ctx context.Context, teamID int64, limit, offset int, statusFilter, appFilter string) ([]*Run, error) {
+	query := `SELECT r.id, r.team_id, r.app_id, a.slug, r.environment_id, r.app_version_id, r.run_no,
+	            r.input_json, r.status, r.priority, r.max_retries, r.retry_count,
+	            r.cancel_requested, r.queued_at, r.started_at, r.finished_at,
+	            r.created_at, r.updated_at, v.version_no
+	     FROM runs r
+	     JOIN app_versions v ON r.app_version_id = v.id
+	     JOIN apps a ON r.app_id = a.id
+	     WHERE r.team_id = ?`
+	args := []any{teamID}
+
+	if statusFilter != "" {
+		query += " AND r.status = ?"
+		args = append(args, statusFilter)
+	}
+	if appFilter != "" {
+		query += " AND a.slug = ?"
+		args = append(args, appFilter)
+	}
+
+	query += ` ORDER BY
+	     CASE r.status
+	       WHEN 'running' THEN 0
+	       WHEN 'leased' THEN 1
+	       WHEN 'cancelling' THEN 2
+	       WHEN 'queued' THEN 3
+	       WHEN 'completed' THEN 4
+	       WHEN 'failed' THEN 5
+	       WHEN 'cancelled' THEN 6
+	       WHEN 'dead' THEN 7
+	       ELSE 8
+	     END,
+	     r.queued_at DESC
+	     LIMIT ? OFFSET ?`
+	args = append(args, limit, offset)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	runs := make([]*Run, 0)
+	for rows.Next() {
+		var r Run
+		var inputJSON sql.NullString
+		var queuedAt, createdAt, updatedAt int64
+		var startedAt, finishedAt sql.NullInt64
+		var cancelRequested int
+		if err := rows.Scan(
+			&r.ID,
+			&r.TeamID,
+			&r.AppID,
+			&r.AppSlug,
+			&r.EnvironmentID,
+			&r.AppVersionID,
+			&r.RunNo,
+			&inputJSON,
+			&r.Status,
+			&r.Priority,
+			&r.MaxRetries,
+			&r.RetryCount,
+			&cancelRequested,
+			&queuedAt,
+			&startedAt,
+			&finishedAt,
+			&createdAt,
+			&updatedAt,
+			&r.VersionNo,
+		); err != nil {
+			return nil, err
+		}
+
+		r.CancelRequested = cancelRequested == 1
+		r.QueuedAt = time.UnixMilli(queuedAt)
+		r.CreatedAt = time.UnixMilli(createdAt)
+		r.UpdatedAt = time.UnixMilli(updatedAt)
+		if startedAt.Valid {
+			t := time.UnixMilli(startedAt.Int64)
+			r.StartedAt = &t
+		}
+		if finishedAt.Valid {
+			t := time.UnixMilli(finishedAt.Int64)
+			r.FinishedAt = &t
+		}
+		if inputJSON.Valid {
+			if err := json.Unmarshal([]byte(inputJSON.String), &r.Input); err != nil {
+				return nil, err
+			}
+		}
+		runs = append(runs, &r)
+	}
+
+	return runs, rows.Err()
+}
+
+// GetRunSummaryByTeam returns run count aggregates for a team.
+func (s *Store) GetRunSummaryByTeam(ctx context.Context, teamID int64) (*RunSummary, error) {
+	var summary RunSummary
+	err := s.db.QueryRowContext(ctx,
+		`SELECT
+	       COUNT(*) AS total_runs,
+	       COALESCE(SUM(CASE WHEN status IN ('running', 'leased', 'cancelling') THEN 1 ELSE 0 END), 0) AS active_runs,
+	       COALESCE(SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END), 0) AS queued_runs,
+	       COALESCE(SUM(CASE WHEN status IN ('completed', 'failed', 'cancelled', 'dead') THEN 1 ELSE 0 END), 0) AS terminal_runs
+	     FROM runs
+	     WHERE team_id = ?`,
+		teamID,
+	).Scan(&summary.TotalRuns, &summary.ActiveRuns, &summary.QueuedRuns, &summary.TerminalRuns)
+	if err != nil {
+		return nil, err
+	}
+
+	return &summary, nil
+}
+
+// GetRunLogs returns logs for the latest attempt of a run after the provided sequence number.
+func (s *Store) GetRunLogs(ctx context.Context, runID int64, afterSeq int64) ([]*RunLog, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT l.id, l.run_attempt_id, l.seq, l.stream, l.line, l.logged_at
-     FROM run_logs l
-     JOIN run_attempts a ON l.run_attempt_id = a.id
-     WHERE a.run_id = ?
-       AND a.attempt_no = (SELECT MAX(attempt_no) FROM run_attempts WHERE run_id = ?)
-     ORDER BY l.seq ASC`,
-		runID, runID,
+	     FROM run_logs l
+	     JOIN run_attempts a ON l.run_attempt_id = a.id
+	     WHERE a.run_id = ?
+	       AND a.attempt_no = (SELECT MAX(attempt_no) FROM run_attempts WHERE run_id = ?)
+	       AND l.seq > ?
+	     ORDER BY l.seq ASC`,
+		runID, runID, afterSeq,
 	)
 	if err != nil {
 		return nil, err

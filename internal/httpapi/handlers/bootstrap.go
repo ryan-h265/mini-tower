@@ -19,9 +19,10 @@ type bootstrapTeamResponse struct {
 	TeamID int64  `json:"team_id"`
 	Slug   string `json:"slug"`
 	Token  string `json:"token"`
+	Role   string `json:"role"`
 }
 
-// BootstrapTeam creates the initial team (single-use globally).
+// BootstrapTeam creates a team or re-issues credentials for an existing slug.
 func (h *Handlers) BootstrapTeam(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -44,38 +45,40 @@ func (h *Handlers) BootstrapTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if any team already exists (single-team MVP)
-	exists, err := h.store.TeamExists(r.Context())
+	team, err := h.store.GetTeamBySlug(r.Context(), req.Slug)
 	if err != nil {
-		h.logger.Error("check team exists", "error", err)
-		writeError(w, http.StatusInternalServerError, "internal", "internal error")
-		return
-	}
-	if exists {
-		writeError(w, http.StatusConflict, "team_exists", "a team already exists")
-		return
-	}
-
-	// Check if slug is taken (for future multi-team support)
-	slugExists, err := h.store.TeamExistsBySlug(r.Context(), req.Slug)
-	if err != nil {
-		h.logger.Error("check slug exists", "error", err)
-		writeError(w, http.StatusInternalServerError, "internal", "internal error")
-		return
-	}
-	if slugExists {
-		writeError(w, http.StatusConflict, "slug_taken", "team slug already exists")
-		return
-	}
-
-	team, err := h.store.CreateTeam(r.Context(), req.Slug, req.Name)
-	if err != nil {
-		h.logger.Error("create team", "error", err)
+		h.logger.Error("get team by slug", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}
 
-	// Set password if provided
+	statusCode := http.StatusCreated
+	if team == nil {
+		// Single-team MVP: if the requested slug does not exist, reject when any team is already present.
+		// This keeps bootstrap idempotent for one slug while still preventing creating a second team.
+		exists, err := h.store.TeamExists(r.Context())
+		if err != nil {
+			h.logger.Error("check team exists", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal", "internal error")
+			return
+		}
+		if exists {
+			writeError(w, http.StatusConflict, "team_exists", "a team already exists")
+			return
+		}
+
+		team, err = h.store.CreateTeam(r.Context(), req.Slug, req.Name)
+		if err != nil {
+			h.logger.Error("create team", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal", "internal error")
+			return
+		}
+	} else {
+		// Same slug re-bootstrap is allowed for local/dev recovery.
+		statusCode = http.StatusOK
+	}
+
+	// Set (or reset) password if provided.
 	if req.Password != nil && *req.Password != "" {
 		hash, err := bcrypt.GenerateFromPassword([]byte(*req.Password), 12)
 		if err != nil {
@@ -90,7 +93,7 @@ func (h *Handlers) BootstrapTeam(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Generate initial team API token
+	// Generate initial/recovery team API token.
 	teamToken, teamTokenHash, err := auth.GeneratePrefixedToken(auth.PrefixTeamToken)
 	if err != nil {
 		h.logger.Error("generate team token", "error", err)
@@ -99,16 +102,17 @@ func (h *Handlers) BootstrapTeam(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tokenName := "bootstrap"
-	_, err = h.store.CreateTeamToken(r.Context(), team.ID, teamTokenHash, &tokenName)
+	createdToken, err := h.store.CreateTeamToken(r.Context(), team.ID, teamTokenHash, &tokenName, "admin")
 	if err != nil {
 		h.logger.Error("create team token", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, bootstrapTeamResponse{
+	writeJSON(w, statusCode, bootstrapTeamResponse{
 		TeamID: team.ID,
 		Slug:   team.Slug,
 		Token:  teamToken,
+		Role:   createdToken.Role,
 	})
 }

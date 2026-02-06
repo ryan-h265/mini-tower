@@ -53,6 +53,7 @@ curl -sS -X POST http://localhost:8080/api/v1/bootstrap/team \
 ```
 
 Save the `token` from the response. The optional `password` field enables the team login endpoint.
+Re-running bootstrap for the same slug is idempotent and can reset that team's password in local/dev flows.
 
 **3. Create an app:**
 ```bash
@@ -102,6 +103,15 @@ curl -sS http://localhost:8080/api/v1/runs/1 -H "Authorization: Bearer $TEAM_TOK
 curl -sS http://localhost:8080/api/v1/runs/1/logs -H "Authorization: Bearer $TEAM_TOKEN"
 ```
 
+**8. Run the frontend control plane UI (optional):**
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open http://localhost:5173. In development, Vite proxies `/api` to `http://localhost:8080`.
+
 ## Configuration
 
 ### Control Plane (`minitowerd`)
@@ -113,6 +123,7 @@ curl -sS http://localhost:8080/api/v1/runs/1/logs -H "Authorization: Bearer $TEA
 | `MINITOWER_OBJECTS_DIR` | `./objects` | Artifact storage directory |
 | `MINITOWER_BOOTSTRAP_TOKEN` | `dev` | Token for team bootstrap |
 | `MINITOWER_RUNNER_REGISTRATION_TOKEN` | — | Token for runner registration (required) |
+| `MINITOWER_CORS_ORIGINS` | — | Comma-separated CORS allowlist (for separate frontend origin deployments) |
 | `MINITOWER_LEASE_TTL` | `60s` | Runner lease duration |
 | `MINITOWER_EXPIRY_CHECK_INTERVAL` | `10s` | Lease expiry check interval |
 | `MINITOWER_MAX_REQUEST_BODY_SIZE` | `10485760` | Max request body (10MB) |
@@ -131,6 +142,30 @@ curl -sS http://localhost:8080/api/v1/runs/1/logs -H "Authorization: Bearer $TEA
 | `MINITOWER_KILL_GRACE_PERIOD` | `10s` | SIGTERM to SIGKILL grace |
 | `MINITOWER_DATA_DIR` | `~/.minitower` | Runner data directory |
 
+### Frontend (`frontend/`)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VITE_API_BASE_URL` | empty | Absolute API URL for separately deployed frontend (for example `https://api.example.com`) |
+| `VITE_DEV_PROXY_TARGET` | `http://localhost:8080` | Dev-only Vite proxy target for `/api` |
+
+### Frontend Deploy Flow
+
+```bash
+# Build static frontend assets
+npm --prefix frontend run build
+```
+
+- Deploy the generated assets from `frontend/dist` to your static host (Nginx, CDN, etc.).
+- Set `VITE_API_BASE_URL` at build time to your control plane origin.
+- Configure `MINITOWER_CORS_ORIGINS` on `minitowerd` to allow the frontend origin.
+
+## Migration Notes
+
+- Migration `internal/migrations/0003_token_role.up.sql` adds `team_tokens.role` with default `admin` and a DB-level role check.
+- Existing tokens in older environments are auto-populated as `admin` when migration runs.
+- Start `minitowerd` once after upgrading to apply pending migrations before running the frontend.
+
 ## API Endpoints
 
 ### Health & Metrics
@@ -139,9 +174,10 @@ curl -sS http://localhost:8080/api/v1/runs/1/logs -H "Authorization: Bearer $TEA
 - `GET /metrics` — Prometheus metrics
 
 ### Team Management
-- `POST /api/v1/bootstrap/team` — Create team (bootstrap token)
-- `POST /api/v1/teams/login` — Authenticate with slug + password, returns token
-- `POST /api/v1/tokens` — Create additional API tokens
+- `POST /api/v1/bootstrap/team` — Create team, or re-bootstrap the same slug (bootstrap token)
+- `POST /api/v1/teams/login` — Authenticate with slug + password, returns token + role
+- `GET /api/v1/me` — Resolve team identity + token role
+- `POST /api/v1/tokens` — Create additional API tokens (admin/member role assignment for admins)
 
 ### Apps & Versions
 - `POST /api/v1/apps` — Create app
@@ -153,9 +189,14 @@ curl -sS http://localhost:8080/api/v1/runs/1/logs -H "Authorization: Bearer $TEA
 ### Runs
 - `POST /api/v1/apps/{app}/runs` — Trigger run
 - `GET /api/v1/apps/{app}/runs` — List runs
+- `GET /api/v1/runs` — List team-wide runs (`limit`, `offset`, `status`, `app` filters)
+- `GET /api/v1/runs/summary` — Team run aggregate counts for dashboard cards
 - `GET /api/v1/runs/{run}` — Get run status
 - `POST /api/v1/runs/{run}/cancel` — Cancel run
-- `GET /api/v1/runs/{run}/logs` — Get run logs
+- `GET /api/v1/runs/{run}/logs` — Get run logs (`after_seq` supports incremental fetch)
+
+### Admin
+- `GET /api/v1/admin/runners` — List registered runners (admin token required)
 
 ### Runner Protocol
 - `POST /api/v1/runners/register` — Register runner (registration token)
@@ -261,9 +302,17 @@ go test -tags=integration ./cmd/minitower-runner
 ./scripts/smoke.sh
 ```
 
+```bash
+# Frontend tests
+npm --prefix frontend run test -- --run
+
+# Frontend typecheck + production build
+npm --prefix frontend run build
+```
+
 ## Docker Compose Demo
 
-Run the full stack with Prometheus and Grafana:
+Run the full stack (control plane, runners, frontend UI, Prometheus, Grafana):
 
 ```bash
 docker compose up -d --build
@@ -273,6 +322,9 @@ docker compose up -d --build
 - **Grafana**: http://localhost:3000 (anonymous access, pre-built dashboard)
 - **Prometheus**: http://localhost:9090
 - **MiniTower API**: http://localhost:8080
+- **MiniTower UI**: http://localhost:5173
+
+The `frontend` Compose service is a dedicated interaction container for the control plane UI. It runs the Vue dev server and proxies `/api` traffic to `minitowerd` over the Compose network.
 
 Tear down:
 ```bash

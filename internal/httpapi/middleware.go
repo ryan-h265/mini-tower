@@ -41,6 +41,47 @@ func ArtifactBodyLimitMiddleware(maxArtifactBytes, maxDefaultBytes int64) Middle
 	}
 }
 
+func CORSMiddleware(allowedOrigins []string) Middleware {
+	allowed := make(map[string]struct{}, len(allowedOrigins))
+	for _, origin := range allowedOrigins {
+		if origin == "" {
+			continue
+		}
+		allowed[origin] = struct{}{}
+	}
+	if len(allowed) == 0 {
+		return func(next http.Handler) http.Handler {
+			return next
+		}
+	}
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			origin := strings.TrimSpace(r.Header.Get("Origin"))
+			if origin == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			_, originAllowed := allowed[origin]
+			if originAllowed {
+				addVaryHeader(w.Header(), "Origin")
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Lease-Token")
+				w.Header().Set("Access-Control-Max-Age", "86400")
+			}
+
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 func Chain(handler http.Handler, middleware ...Middleware) http.Handler {
 	wrapped := handler
 	for i := len(middleware) - 1; i >= 0; i-- {
@@ -62,4 +103,17 @@ func Recoverer(logger *slog.Logger) Middleware {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func addVaryHeader(header http.Header, value string) {
+	existing := header.Values("Vary")
+	for _, entry := range existing {
+		parts := strings.Split(entry, ",")
+		for _, part := range parts {
+			if strings.EqualFold(strings.TrimSpace(part), value) {
+				return
+			}
+		}
+	}
+	header.Add("Vary", value)
 }

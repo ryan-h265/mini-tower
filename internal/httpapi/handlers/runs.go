@@ -23,6 +23,7 @@ type createRunRequest struct {
 type runResponse struct {
 	RunID           int64          `json:"run_id"`
 	AppID           int64          `json:"app_id"`
+	AppSlug         string         `json:"app_slug,omitempty"`
 	RunNo           int64          `json:"run_no"`
 	VersionNo       int64          `json:"version_no"`
 	Status          string         `json:"status"`
@@ -38,6 +39,13 @@ type runResponse struct {
 
 type listRunsResponse struct {
 	Runs []runResponse `json:"runs"`
+}
+
+type runSummaryResponse struct {
+	TotalRuns    int64 `json:"total_runs"`
+	ActiveRuns   int64 `json:"active_runs"`
+	QueuedRuns   int64 `json:"queued_runs"`
+	TerminalRuns int64 `json:"terminal_runs"`
 }
 
 type runLogEntry struct {
@@ -249,6 +257,104 @@ func (h *Handlers) ListRuns(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// ListRunsByTeam returns runs across all apps for the current team.
+func (h *Handlers) ListRunsByTeam(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	teamID, ok := teamIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "missing team context")
+		return
+	}
+
+	limit := 50
+	offset := 0
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if val, err := strconv.Atoi(l); err == nil && val > 0 && val <= 100 {
+			limit = val
+		}
+	}
+	if o := r.URL.Query().Get("offset"); o != "" {
+		if val, err := strconv.Atoi(o); err == nil && val >= 0 {
+			offset = val
+		}
+	}
+
+	statusFilter := strings.TrimSpace(r.URL.Query().Get("status"))
+	if statusFilter != "" && !isValidRunStatus(statusFilter) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid status filter")
+		return
+	}
+	appFilter := strings.TrimSpace(r.URL.Query().Get("app"))
+
+	runs, err := h.store.ListRunsByTeam(r.Context(), teamID, limit, offset, statusFilter, appFilter)
+	if err != nil {
+		h.logger.Error("list team runs", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal", "internal error")
+		return
+	}
+
+	resp := listRunsResponse{Runs: make([]runResponse, 0, len(runs))}
+	for _, run := range runs {
+		rr := runResponse{
+			RunID:           run.ID,
+			AppID:           run.AppID,
+			AppSlug:         run.AppSlug,
+			RunNo:           run.RunNo,
+			VersionNo:       run.VersionNo,
+			Status:          run.Status,
+			Input:           run.Input,
+			Priority:        run.Priority,
+			MaxRetries:      run.MaxRetries,
+			RetryCount:      run.RetryCount,
+			CancelRequested: run.CancelRequested,
+			QueuedAt:        run.QueuedAt.Format(time.RFC3339),
+		}
+		if run.StartedAt != nil {
+			s := run.StartedAt.Format(time.RFC3339)
+			rr.StartedAt = &s
+		}
+		if run.FinishedAt != nil {
+			f := run.FinishedAt.Format(time.RFC3339)
+			rr.FinishedAt = &f
+		}
+		resp.Runs = append(resp.Runs, rr)
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// GetRunsSummary returns aggregate run counts for the current team.
+func (h *Handlers) GetRunsSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	teamID, ok := teamIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "missing team context")
+		return
+	}
+
+	summary, err := h.store.GetRunSummaryByTeam(r.Context(), teamID)
+	if err != nil {
+		h.logger.Error("get runs summary", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal", "internal error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, runSummaryResponse{
+		TotalRuns:    summary.TotalRuns,
+		ActiveRuns:   summary.ActiveRuns,
+		QueuedRuns:   summary.QueuedRuns,
+		TerminalRuns: summary.TerminalRuns,
+	})
+}
+
 // GetRun returns a single run by ID.
 func (h *Handlers) GetRun(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -285,10 +391,17 @@ func (h *Handlers) GetRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}
+	app, err := h.store.GetAppByIDDirect(r.Context(), run.AppID)
+	if err != nil {
+		h.logger.Error("get app", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal", "internal error")
+		return
+	}
 
 	rr := runResponse{
 		RunID:           run.ID,
 		AppID:           run.AppID,
+		AppSlug:         "",
 		RunNo:           run.RunNo,
 		Status:          run.Status,
 		Input:           run.Input,
@@ -297,6 +410,9 @@ func (h *Handlers) GetRun(w http.ResponseWriter, r *http.Request) {
 		RetryCount:      run.RetryCount,
 		CancelRequested: run.CancelRequested,
 		QueuedAt:        run.QueuedAt.Format(time.RFC3339),
+	}
+	if app != nil {
+		rr.AppSlug = app.Slug
 	}
 	if v != nil {
 		rr.VersionNo = v.VersionNo
@@ -422,7 +538,17 @@ func (h *Handlers) GetRunLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logs, err := h.store.GetRunLogs(r.Context(), runID)
+	afterSeq := int64(0)
+	if raw := r.URL.Query().Get("after_seq"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 0 {
+			writeError(w, http.StatusBadRequest, "invalid_request", "after_seq must be a non-negative integer")
+			return
+		}
+		afterSeq = parsed
+	}
+
+	logs, err := h.store.GetRunLogs(r.Context(), runID, afterSeq)
 	if err != nil {
 		h.logger.Error("get run logs", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "internal error")
@@ -490,4 +616,13 @@ func extractRunIDFromLogsPath(path string) int64 {
 		return 0
 	}
 	return id
+}
+
+func isValidRunStatus(status string) bool {
+	switch status {
+	case "queued", "leased", "running", "cancelling", "completed", "failed", "cancelled", "dead":
+		return true
+	default:
+		return false
+	}
 }

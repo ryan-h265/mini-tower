@@ -23,6 +23,7 @@ type TeamToken struct {
 	TeamID    int64
 	TokenHash string
 	Name      *string
+	Role      string
 	CreatedAt time.Time
 	RevokedAt *time.Time
 }
@@ -131,13 +132,13 @@ func (s *Store) SetTeamPassword(ctx context.Context, teamID int64, passwordHash 
 }
 
 // CreateTeamToken creates a new team API token.
-func (s *Store) CreateTeamToken(ctx context.Context, teamID int64, tokenHash string, name *string) (*TeamToken, error) {
+func (s *Store) CreateTeamToken(ctx context.Context, teamID int64, tokenHash string, name *string, role string) (*TeamToken, error) {
 	now := time.Now().UnixMilli()
 
 	result, err := s.db.ExecContext(ctx,
-		`INSERT INTO team_tokens (team_id, token_hash, name, created_at)
-     VALUES (?, ?, ?, ?)`,
-		teamID, tokenHash, name, now,
+		`INSERT INTO team_tokens (team_id, token_hash, name, role, created_at)
+	     VALUES (?, ?, ?, ?, ?)`,
+		teamID, tokenHash, name, role, now,
 	)
 	if err != nil {
 		return nil, err
@@ -153,6 +154,7 @@ func (s *Store) CreateTeamToken(ctx context.Context, teamID int64, tokenHash str
 		TeamID:    teamID,
 		TokenHash: tokenHash,
 		Name:      name,
+		Role:      role,
 		CreatedAt: time.UnixMilli(now),
 	}, nil
 }

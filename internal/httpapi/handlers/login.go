@@ -17,6 +17,7 @@ type loginResponse struct {
 	TeamID  int64  `json:"team_id"`
 	Token   string `json:"token"`
 	TokenID int64  `json:"token_id"`
+	Role    string `json:"role"`
 }
 
 // LoginTeam authenticates a team by slug + password and returns a new API token.
@@ -64,7 +65,7 @@ func (h *Handlers) LoginTeam(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tokenName := "login"
-	teamToken, err := h.store.CreateTeamToken(r.Context(), team.ID, tokenHash, &tokenName)
+	teamToken, err := h.store.CreateTeamToken(r.Context(), team.ID, tokenHash, &tokenName, "admin")
 	if err != nil {
 		h.logger.Error("create team token", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "internal error")
@@ -75,5 +76,6 @@ func (h *Handlers) LoginTeam(w http.ResponseWriter, r *http.Request) {
 		TeamID:  team.ID,
 		Token:   token,
 		TokenID: teamToken.ID,
+		Role:    teamToken.Role,
 	})
 }

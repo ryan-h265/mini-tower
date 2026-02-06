@@ -49,11 +49,16 @@ func (a *Auth) RequireTeam(next http.Handler) http.Handler {
 		var tokenID int64
 		var teamID int64
 		var teamSlug string
+		var role string
 		err := a.db.QueryRowContext(
 			r.Context(),
-			`SELECT tt.id, tt.team_id, t.slug FROM team_tokens tt JOIN teams t ON tt.team_id = t.id WHERE tt.token_hash = ? AND tt.revoked_at IS NULL LIMIT 1`,
+			`SELECT tt.id, tt.team_id, t.slug, tt.role
+		     FROM team_tokens tt
+		     JOIN teams t ON tt.team_id = t.id
+		     WHERE tt.token_hash = ? AND tt.revoked_at IS NULL
+		     LIMIT 1`,
 			tokenHash,
-		).Scan(&tokenID, &teamID, &teamSlug)
+		).Scan(&tokenID, &teamID, &teamSlug, &role)
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or missing token")
 			return
@@ -66,8 +71,21 @@ func (a *Auth) RequireTeam(next http.Handler) http.Handler {
 		ctx := handlers.WithTeamID(r.Context(), teamID)
 		ctx = handlers.WithTeamTokenID(ctx, tokenID)
 		ctx = handlers.WithTeamSlug(ctx, teamSlug)
+		ctx = handlers.WithTokenRole(ctx, role)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func (a *Auth) RequireAdmin(next http.Handler) http.Handler {
+	return a.RequireTeam(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		role, ok := handlers.TokenRoleFromContext(r.Context())
+		if !ok || role != "admin" {
+			writeError(w, http.StatusForbidden, "forbidden", "admin role required")
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	}))
 }
 
 func (a *Auth) RequireRunnerRegistration(next http.Handler) http.Handler {

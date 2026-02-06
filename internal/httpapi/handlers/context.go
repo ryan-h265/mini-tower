@@ -8,6 +8,7 @@ const (
 	ctxKeyTeamID      contextKey = "teamID"
 	ctxKeyTeamSlug    contextKey = "teamSlug"
 	ctxKeyTeamTokenID contextKey = "teamTokenID"
+	ctxKeyTokenRole   contextKey = "tokenRole"
 	ctxKeyRunnerID    contextKey = "runnerID"
 	ctxKeyEnvironment contextKey = "environment"
 )
@@ -40,6 +41,16 @@ func teamTokenIDFromContext(ctx context.Context) (int64, bool) {
 	value := ctx.Value(ctxKeyTeamTokenID)
 	id, ok := value.(int64)
 	return id, ok
+}
+
+func WithTokenRole(ctx context.Context, role string) context.Context {
+	return context.WithValue(ctx, ctxKeyTokenRole, role)
+}
+
+func TokenRoleFromContext(ctx context.Context) (string, bool) {
+	value := ctx.Value(ctxKeyTokenRole)
+	role, ok := value.(string)
+	return role, ok
 }
 
 func WithRunnerID(ctx context.Context, runnerID int64) context.Context {
