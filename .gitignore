@@ -11,3 +11,5 @@
 .demo-token
 /minitowerd
 /minitower-runner
+/frontend/node_modules
+/frontend/dist
