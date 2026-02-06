@@ -49,10 +49,10 @@ go run ./cmd/minitowerd
 curl -sS -X POST http://localhost:8080/api/v1/bootstrap/team \
   -H "Authorization: Bearer dev" \
   -H "Content-Type: application/json" \
-  -d '{"slug":"acme","name":"Acme Corp"}'
+  -d '{"slug":"acme","name":"Acme Corp","password":"secret"}'
 ```
 
-Save the `token` from the response.
+Save the `token` from the response. The optional `password` field enables the team login endpoint.
 
 **3. Create an app:**
 ```bash
@@ -140,6 +140,7 @@ curl -sS http://localhost:8080/api/v1/runs/1/logs -H "Authorization: Bearer $TEA
 
 ### Team Management
 - `POST /api/v1/bootstrap/team` — Create team (bootstrap token)
+- `POST /api/v1/teams/login` — Authenticate with slug + password, returns token
 - `POST /api/v1/tokens` — Create additional API tokens
 
 ### Apps & Versions
@@ -258,6 +259,24 @@ go test -tags=integration ./cmd/minitower-runner
 
 # End-to-end smoke test
 ./scripts/smoke.sh
+```
+
+## Docker Compose Demo
+
+Run the full stack with Prometheus and Grafana:
+
+```bash
+docker compose up -d --build
+./scripts/demo-compose.sh --loop
+```
+
+- **Grafana**: http://localhost:3000 (anonymous access, pre-built dashboard)
+- **Prometheus**: http://localhost:9090
+- **MiniTower API**: http://localhost:8080
+
+Tear down:
+```bash
+docker compose down -v
 ```
 
 ## License

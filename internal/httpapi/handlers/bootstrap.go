@@ -3,13 +3,16 @@ package handlers
 import (
 	"net/http"
 
+	"golang.org/x/crypto/bcrypt"
+
 	"minitower/internal/auth"
 	"minitower/internal/validate"
 )
 
 type bootstrapTeamRequest struct {
-	Slug string `json:"slug"`
-	Name string `json:"name"`
+	Slug     string  `json:"slug"`
+	Name     string  `json:"name"`
+	Password *string `json:"password,omitempty"`
 }
 
 type bootstrapTeamResponse struct {
@@ -70,6 +73,21 @@ func (h *Handlers) BootstrapTeam(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("create team", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "internal error")
 		return
+	}
+
+	// Set password if provided
+	if req.Password != nil && *req.Password != "" {
+		hash, err := bcrypt.GenerateFromPassword([]byte(*req.Password), 12)
+		if err != nil {
+			h.logger.Error("hash password", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal", "internal error")
+			return
+		}
+		if err := h.store.SetTeamPassword(r.Context(), team.ID, string(hash)); err != nil {
+			h.logger.Error("set team password", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal", "internal error")
+			return
+		}
 	}
 
 	// Generate initial team API token

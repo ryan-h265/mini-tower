@@ -10,11 +10,12 @@ import (
 var ErrTeamExists = errors.New("team already exists")
 
 type Team struct {
-	ID        int64
-	Slug      string
-	Name      string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID           int64
+	Slug         string
+	Name         string
+	PasswordHash *string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 type TeamToken struct {
@@ -84,10 +85,10 @@ func (s *Store) GetTeamByID(ctx context.Context, id int64) (*Team, error) {
 	var t Team
 	var createdAt, updatedAt int64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, slug, name, created_at, updated_at
+		`SELECT id, slug, name, password_hash, created_at, updated_at
      FROM teams WHERE id = ?`,
 		id,
-	).Scan(&t.ID, &t.Slug, &t.Name, &createdAt, &updatedAt)
+	).Scan(&t.ID, &t.Slug, &t.Name, &t.PasswordHash, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -97,6 +98,36 @@ func (s *Store) GetTeamByID(ctx context.Context, id int64) (*Team, error) {
 	t.CreatedAt = time.UnixMilli(createdAt)
 	t.UpdatedAt = time.UnixMilli(updatedAt)
 	return &t, nil
+}
+
+// GetTeamBySlug returns a team by slug.
+func (s *Store) GetTeamBySlug(ctx context.Context, slug string) (*Team, error) {
+	var t Team
+	var createdAt, updatedAt int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, slug, name, password_hash, created_at, updated_at
+     FROM teams WHERE slug = ?`,
+		slug,
+	).Scan(&t.ID, &t.Slug, &t.Name, &t.PasswordHash, &createdAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	t.CreatedAt = time.UnixMilli(createdAt)
+	t.UpdatedAt = time.UnixMilli(updatedAt)
+	return &t, nil
+}
+
+// SetTeamPassword updates a team's password hash.
+func (s *Store) SetTeamPassword(ctx context.Context, teamID int64, passwordHash string) error {
+	now := time.Now().UnixMilli()
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE teams SET password_hash = ?, updated_at = ? WHERE id = ?`,
+		passwordHash, now, teamID,
+	)
+	return err
 }
 
 // CreateTeamToken creates a new team API token.
