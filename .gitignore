@@ -7,3 +7,7 @@
 .env
 .claude/
 .gocache/
+.cover.out
+.demo-token
+/minitowerd
+/minitower-runner
