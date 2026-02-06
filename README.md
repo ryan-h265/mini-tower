@@ -156,6 +156,15 @@ curl -sS http://localhost:8080/api/v1/runs/1/logs -H "Authorization: Bearer $TEA
 - `POST /api/v1/runs/{run}/cancel` — Cancel run
 - `GET /api/v1/runs/{run}/logs` — Get run logs
 
+### Runner Protocol
+- `POST /api/v1/runners/register` — Register runner (registration token)
+- `POST /api/v1/runs/lease` — Lease next queued run
+- `POST /api/v1/runs/{run}/start` — Acknowledge lease, transition to running
+- `POST /api/v1/runs/{run}/heartbeat` — Extend lease, check for cancellation
+- `POST /api/v1/runs/{run}/logs` — Submit log batch (runner token + lease token)
+- `POST /api/v1/runs/{run}/result` — Submit terminal result
+- `GET /api/v1/runs/{run}/artifact` — Download version artifact
+
 ## How It Works
 
 **Artifacts**: A version artifact is a `.tar.gz` containing your Python code. If `requirements.txt` is present, dependencies are installed into an isolated virtual environment before execution. Artifacts are SHA-256 verified on download.

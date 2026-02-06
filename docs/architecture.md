@@ -314,12 +314,14 @@ Terminal-friendly representation for plain-text documentation.
 
 Run Status Flow:
   queued ──▶ leased ──▶ running ──▶ completed
-                │           │           │
-                │           ▼           ▼
-                │      cancelling ──▶ cancelled
-                │           │
-                ▼           ▼
-              dead      expired (retry)
+    │           │           │
+    │           │           ▼
+    │           │      cancelling ──▶ cancelled
+    │           │           │
+    ▼           └─────┬─────┘
+  cancelled          ▼
+  (pre-lease)       dead
+                  (retries exhausted)
 ```
 
 ---
