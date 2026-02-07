@@ -3,6 +3,9 @@ set -euo pipefail
 
 BASE_URL="${MINITOWER_URL:-http://localhost:8080}"
 BOOTSTRAP_TOKEN="${MINITOWER_BOOTSTRAP_TOKEN:-dev}"
+TEAM_SLUG="${MINITOWER_DEMO_TEAM_SLUG:-demo}"
+TEAM_NAME="${MINITOWER_DEMO_TEAM_NAME:-Demo Team}"
+TEAM_PASSWORD="${MINITOWER_DEMO_TEAM_PASSWORD:-demo}"
 BATCH_SIZE="${BATCH_SIZE:-5}"
 LOOP=false
 
@@ -27,6 +30,10 @@ extract_token() {
   grep -o '"token":"[^"]*"' | head -1 | cut -d'"' -f4 || true
 }
 
+extract_code() {
+  grep -o '"code":"[^"]*"' | head -1 | cut -d'"' -f4 || true
+}
+
 wait_healthy() {
   echo "Waiting for minitowerd to be healthy..."
   for i in $(seq 1 60); do
@@ -44,26 +51,33 @@ wait_healthy() {
 
 wait_healthy
 
-# Obtain a team token: try bootstrap first, fall back to login.
-echo "Bootstrapping team..."
+# Obtain a team token:
+# 1) bootstrap requested team slug (idempotent for the same slug)
+# 2) if bootstrap is denied, login with provided credentials
+echo "Bootstrapping team slug '${TEAM_SLUG}'..."
 TEAM_RESP=$(api POST /api/v1/bootstrap/team "$BOOTSTRAP_TOKEN" \
-  -d '{"slug":"demo","name":"Demo Team","password":"demo"}' 2>&1) || true
+  -d "{\"slug\":\"${TEAM_SLUG}\",\"name\":\"${TEAM_NAME}\",\"password\":\"${TEAM_PASSWORD}\"}" 2>&1) || true
 TEAM_TOKEN=$(echo "$TEAM_RESP" | extract_token)
+TEAM_ERR_CODE=$(echo "$TEAM_RESP" | extract_code)
 
 if [ -z "$TEAM_TOKEN" ]; then
-  echo "Bootstrap returned no token (team may already exist). Logging in..."
+  echo "Bootstrap returned no token (code='${TEAM_ERR_CODE:-unknown}'). Logging in..."
   LOGIN_RESP=$(curl -sS -X POST "${BASE_URL}/api/v1/teams/login" \
     -H "Content-Type: application/json" \
-    -d '{"slug":"demo","password":"demo"}')
+    -d "{\"slug\":\"${TEAM_SLUG}\",\"password\":\"${TEAM_PASSWORD}\"}")
   TEAM_TOKEN=$(echo "$LOGIN_RESP" | extract_token)
+  LOGIN_ERR_CODE=$(echo "$LOGIN_RESP" | extract_code)
 
   if [ -z "$TEAM_TOKEN" ]; then
     echo "ERROR: Could not bootstrap or login."
-    echo "Response: $LOGIN_RESP"
+    echo "Bootstrap response: ${TEAM_RESP}"
+    echo "Login response: ${LOGIN_RESP}"
+    echo "Tip: ensure MINITOWER_DEMO_TEAM_SLUG / MINITOWER_DEMO_TEAM_PASSWORD match the existing team, or reset state with: docker compose down -v"
     exit 1
   fi
-  echo "Logged in successfully."
+  echo "Logged in successfully for team '${TEAM_SLUG}'."
 fi
+echo "Team slug: ${TEAM_SLUG}"
 echo "Team token: ${TEAM_TOKEN:0:12}..."
 
 # Create app (ignore "already exists" errors)
@@ -143,6 +157,7 @@ fi
 
 echo ""
 echo "=== Demo URLs ==="
+echo "  UI:         http://localhost:5173"
 echo "  Grafana:    http://localhost:3000"
 echo "  Prometheus: http://localhost:9090"
 echo "  MiniTower:  http://localhost:8080"
