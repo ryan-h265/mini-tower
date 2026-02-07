@@ -6,28 +6,36 @@ MiniTower is a lightweight orchestration platform for deploying and running Pyth
 
 ## Features
 
+- **Towerfile** — Declarative TOML config per project defines entrypoint, source globs, timeout, and parameters
+- **CLI Deploy** — `minitower-cli deploy` reads the Towerfile, packages artifacts, and uploads versions in one command
 - **Apps & Versions** — Deploy immutable versioned artifacts with optional JSON Schema input validation
 - **Distributed Runners** — Self-hosted workers with lease-based execution and automatic retry on failure
+- **Multi-Runtime** — Python (`.py` with venv) and shell (`.sh`) entrypoints out of the box
 - **Cancellation** — Graceful cancellation with SIGTERM/SIGKILL and deterministic state convergence
 - **Observability** — Prometheus metrics, structured JSON logs, and per-run log streaming
+- **Frontend UI** — Vue 3 SPA with app management, version upload, run creation, and live log streaming
 - **SQLite Storage** — Single-file database with WAL mode for concurrent reads
 
 ## Architecture
 
 ```
-┌─────────────────┐         ┌─────────────────┐
-│   Control Plane │◄───────►│     Runner      │
-│   (minitowerd)  │  HTTP   │ (minitower-     │
-│                 │         │     runner)     │
-│  ┌───────────┐  │         │                 │
-│  │  SQLite   │  │         │  ┌───────────┐  │
-│  │    +      │  │         │  │  Python   │  │
-│  │  Objects  │  │         │  │  Workload │  │
-│  └───────────┘  │         │  └───────────┘  │
-└─────────────────┘         └─────────────────┘
+┌─────────────────┐
+│  minitower-cli  │──── deploy ────┐
+│   (Towerfile)   │                │
+└─────────────────┘                ▼
+┌─────────────────┐        ┌─────────────────┐         ┌─────────────────┐
+│    Vue SPA      │──/api─►│   Control Plane │◄───────►│     Runner      │
+│   (Frontend)    │        │   (minitowerd)  │  HTTP   │ (minitower-     │
+└─────────────────┘        │                 │         │     runner)     │
+                           │  ┌───────────┐  │         │                 │
+                           │  │  SQLite   │  │         │  ┌───────────┐  │
+                           │  │    +      │  │         │  │ .py / .sh │  │
+                           │  │  Objects  │  │         │  │  Workload │  │
+                           │  └───────────┘  │         │  └───────────┘  │
+                           └─────────────────┘         └─────────────────┘
 ```
 
-The control plane manages state and stores artifacts. Runners poll for work, execute Python scripts in isolated virtual environments, and report results. All state transitions use optimistic locking to prevent races.
+The control plane manages state and stores artifacts. A `Towerfile` (TOML) in each project declares the entrypoint, source globs, timeout, and parameters. The CLI packages and uploads artifacts; the server extracts metadata from the embedded Towerfile. Runners poll for work, execute scripts in isolated environments (Python venv for `.py`, `/bin/sh` for `.sh`), and report results. A Vue 3 SPA provides a browser UI for managing apps, uploading versions, triggering runs, and viewing logs. All state transitions use optimistic locking to prevent races.
 
 ## Requirements
 
@@ -55,31 +63,40 @@ curl -sS -X POST http://localhost:8080/api/v1/bootstrap/team \
 Save the `token` from the response. The optional `password` field enables the team login endpoint.
 Re-running bootstrap for the same slug is idempotent and can reset that team's password in local/dev flows.
 
-**3. Create an app:**
+**3. Create a project with a Towerfile:**
 ```bash
-curl -sS -X POST http://localhost:8080/api/v1/apps \
-  -H "Authorization: Bearer $TEAM_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"slug":"hello","description":"Hello world app"}'
-```
-
-**4. Package and upload a version:**
-```bash
-# Create artifact
-mkdir -p artifact && cat > artifact/main.py << 'PY'
+mkdir -p myapp && cat > myapp/main.py << 'PY'
 import os, json
 input_data = json.loads(os.environ.get("MINITOWER_INPUT", "{}"))
 print(f"Hello, {input_data.get('name', 'World')}!")
 PY
-tar -czf hello.tar.gz -C artifact .
 
-# Upload
-curl -sS -X POST http://localhost:8080/api/v1/apps/hello/versions \
-  -H "Authorization: Bearer $TEAM_TOKEN" \
-  -F artifact=@hello.tar.gz \
-  -F entrypoint=main.py \
-  -F timeout_seconds=60
+cat > myapp/Towerfile << 'TOML'
+[app]
+name = "hello"
+script = "main.py"
+source = ["./*.py"]
+
+[app.timeout]
+seconds = 60
+
+[[parameters]]
+name = "name"
+description = "Name to greet"
+type = "string"
+default = "World"
+TOML
 ```
+
+**4. Deploy with the CLI:**
+```bash
+go run ./cmd/minitower-cli deploy \
+  --server http://localhost:8080 \
+  --token "$TEAM_TOKEN" \
+  --dir myapp
+```
+
+The CLI reads the Towerfile, packages matching source files into a tar.gz, auto-creates the app if needed, and uploads the version.
 
 **5. Trigger a run:**
 ```bash
@@ -162,6 +179,7 @@ npm --prefix frontend run build
 
 ## Migration Notes
 
+- Migration `internal/migrations/0004_towerfile.up.sql` adds `towerfile_toml` and `import_paths_json` columns to `app_versions`. Existing versions retain `NULL` for these columns and continue to work. New versions require a Towerfile in the uploaded artifact.
 - Migration `internal/migrations/0003_token_role.up.sql` adds `team_tokens.role` with default `admin` and a DB-level role check.
 - Existing tokens in older environments are auto-populated as `admin` when migration runs.
 - Start `minitowerd` once after upgrading to apply pending migrations before running the frontend.
@@ -183,7 +201,7 @@ npm --prefix frontend run build
 - `POST /api/v1/apps` — Create app
 - `GET /api/v1/apps` — List apps
 - `GET /api/v1/apps/{app}` — Get app details
-- `POST /api/v1/apps/{app}/versions` — Upload version (multipart)
+- `POST /api/v1/apps/{app}/versions` — Upload version (multipart artifact with Towerfile)
 - `GET /api/v1/apps/{app}/versions` — List versions
 
 ### Runs
@@ -278,9 +296,11 @@ curl -s localhost:8080/metrics | grep minitower_runs
 
 ## How It Works
 
-**Artifacts**: A version artifact is a `.tar.gz` containing your Python code. If `requirements.txt` is present, dependencies are installed into an isolated virtual environment before execution. Artifacts are SHA-256 verified on download.
+**Towerfile**: Each project contains a `Towerfile` (TOML) that declares the app name, entrypoint script, source globs, timeout, and input parameters. The CLI uses it to package artifacts; the server extracts and stores it on upload.
 
-**Execution**: Runners create a fresh workspace and `venv` for each run. The entrypoint script receives input via `MINITOWER_INPUT` environment variable as JSON.
+**Artifacts**: A version artifact is a `.tar.gz` containing your code and a `Towerfile` at its root. If `requirements.txt` is present, dependencies are installed into an isolated virtual environment before execution. Artifacts are SHA-256 verified on download.
+
+**Execution**: Runners create a fresh workspace for each run. Python (`.py`) entrypoints run in an isolated venv; shell (`.sh`) entrypoints run under `/bin/sh`. The entrypoint receives input via `MINITOWER_INPUT` environment variable as JSON.
 
 **Leasing**: Runners acquire exclusive leases on runs. If a runner fails to heartbeat before lease expiry, the run is automatically retried (up to `max_retries`) or marked dead.
 

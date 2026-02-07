@@ -20,13 +20,20 @@ High-level view of system components and their interactions.
 ```mermaid
 graph TB
     subgraph "Clients"
-        CLI[CLI / API Client]
+        MCLI[minitower-cli<br/>Towerfile Deploy]
+        API_CLIENT[API Client / curl]
+    end
+
+    subgraph "Frontend (Vue SPA)"
+        VueApp[Vue 3 + TypeScript]
+        TanStack[TanStack Query]
     end
 
     subgraph "Control Plane (minitowerd)"
         API[HTTP API Server]
         Auth[Auth Middleware]
         Handlers[Request Handlers]
+        TFExtract[Towerfile Extractor]
         Store[Store Layer]
         Reaper[Expiry Reaper<br/>Goroutine]
         Objects[Object Store<br/>Local FS]
@@ -40,12 +47,18 @@ graph TB
         RunnerMain[Runner Agent]
         Executor[Process Executor]
         VEnv[Python venv]
+        Shell[Shell Executor]
         Workspace[Temp Workspace]
     end
 
-    CLI -->|Team Token| API
+    MCLI -->|Towerfile + Artifact| API
+    API_CLIENT -->|Team Token| API
+    VueApp -->|Team Token| API
+    VueApp --> TanStack
     API --> Auth
     Auth --> Handlers
+    Handlers --> TFExtract
+    TFExtract -->|Parsed Metadata| Store
     Handlers --> Store
     Store --> SQLite
     Handlers -->|Artifacts| Objects
@@ -53,9 +66,10 @@ graph TB
 
     RunnerMain -->|Runner Token| API
     RunnerMain -->|Lease Token| API
-    API -->|Artifact Download| RunnerMain
+    API -->|Artifact +<br/>X-Import-Paths| RunnerMain
     RunnerMain --> Executor
-    Executor --> VEnv
+    Executor -->|.py| VEnv
+    Executor -->|.sh| Shell
     Executor --> Workspace
 ```
 
@@ -84,6 +98,7 @@ graph TD
         TeamStore[Teams Store]
         AppStore[Apps Store]
         VersionStore[Versions Store]
+        TowerfilePkg[Towerfile Package<br/>Parse / Validate / Package]
         RunStore[Runs Store]
         RunnerStore[Runners Store]
         ReaperSvc[Reaper Service]
@@ -104,6 +119,7 @@ graph TD
     Bootstrap --> TeamStore
     Apps --> AppStore
     Apps --> VersionStore
+    Apps --> TowerfilePkg
     Runs --> RunStore
     Runner --> RunnerStore
     ReaperSvc --> RunStore
@@ -125,10 +141,23 @@ Complete flow from run creation through execution and completion.
 
 ```mermaid
 sequenceDiagram
+    participant CLI as minitower-cli
     participant C as Client
     participant API as Control Plane
     participant DB as SQLite
     participant R as Runner
+
+    Note over CLI,R: Deploy Flow (Towerfile)
+
+    CLI->>CLI: Read Towerfile, resolve globs, package tar.gz
+    CLI->>API: GET /apps/{app} (check exists)
+    API-->>CLI: 404 Not Found
+    CLI->>API: POST /apps {slug}
+    API-->>CLI: 201 Created
+    CLI->>API: POST /apps/{app}/versions (artifact multipart)
+    API->>API: Extract Towerfile from tar.gz
+    API->>DB: Insert version + towerfile_toml + import_paths
+    API-->>CLI: 201 Created {version_no}
 
     Note over C,R: Run Creation & Execution Flow
 
@@ -148,9 +177,9 @@ sequenceDiagram
     API-->>R: 200 {lease_expires_at}
 
     R->>API: GET /runs/{run}/artifact
-    API-->>R: Artifact + SHA256
+    API-->>R: Artifact + SHA256 + X-Import-Paths
 
-    Note over R: Execute Python in venv
+    Note over R: Execute .py (venv) or .sh (/bin/sh)
 
     loop During Execution
         R->>API: POST /runs/{run}/heartbeat
@@ -194,6 +223,13 @@ graph TB
     RUNNER1 --> WORK1
 
     CLIENT[API Client] -->|HTTP :8080| MTWD
+    MCLI[minitower-cli] -->|Deploy| MTWD
+
+    subgraph "Frontend"
+        VUE[Vue SPA<br/>:5173 dev / static]
+    end
+
+    VUE -->|/api proxy| MTWD
 ```
 
 ---
@@ -241,6 +277,8 @@ erDiagram
         string artifact_sha256
         string entrypoint
         int timeout_seconds
+        text towerfile_toml
+        text import_paths_json
     }
 
     RUN {
@@ -280,37 +318,47 @@ erDiagram
 Terminal-friendly representation for plain-text documentation.
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         MINITOWER ARCHITECTURE                       │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│   ┌──────────────┐         HTTP/JSON           ┌──────────────────┐ │
-│   │  API Client  │ ──────────────────────────▶ │  Control Plane   │ │
-│   │  (Team Token)│                             │   (minitowerd)   │ │
-│   └──────────────┘                             │                  │ │
-│                                                │  ┌────────────┐  │ │
-│                                                │  │  HTTP API  │  │ │
-│   ┌──────────────┐         HTTP/JSON           │  ├────────────┤  │ │
-│   │    Runner    │ ◀─────────────────────────▶ │  │  Handlers  │  │ │
-│   │(Runner Token)│                             │  ├────────────┤  │ │
-│   │              │                             │  │   Store    │  │ │
-│   │ ┌──────────┐ │                             │  ├────────────┤  │ │
-│   │ │ Executor │ │                             │  │   Reaper   │  │ │
-│   │ │ (Python) │ │                             │  └────────────┘  │ │
-│   │ └──────────┘ │                             │        │         │ │
-│   │ ┌──────────┐ │                             │        ▼         │ │
-│   │ │  venv    │ │                             │  ┌────────────┐  │ │
-│   │ └──────────┘ │                             │  │  SQLite    │  │ │
-│   └──────────────┘                             │  │  (WAL)     │  │ │
-│                                                │  └────────────┘  │ │
-│                                                │        │         │ │
-│                                                │        ▼         │ │
-│                                                │  ┌────────────┐  │ │
-│                                                │  │  Objects   │  │ │
-│                                                │  │  (Local)   │  │ │
-│                                                │  └────────────┘  │ │
-│                                                └──────────────────┘ │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                          MINITOWER ARCHITECTURE                          │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│   ┌──────────────┐                             ┌──────────────────┐     │
+│   │minitower-cli │ ─── deploy (Towerfile) ──▶ │  Control Plane   │     │
+│   │  (Towerfile) │                             │   (minitowerd)   │     │
+│   └──────────────┘                             │                  │     │
+│                                                │  ┌────────────┐  │     │
+│   ┌──────────────┐         /api proxy          │  │  HTTP API  │  │     │
+│   │  Vue SPA     │ ──────────────────────────▶ │  ├────────────┤  │     │
+│   │  (Frontend)  │                             │  │  Handlers  │  │     │
+│   └──────────────┘                             │  ├────────────┤  │     │
+│                                                │  │ Towerfile  │  │     │
+│   ┌──────────────┐         HTTP/JSON           │  │ Extractor  │  │     │
+│   │    Runner    │ ◀─────────────────────────▶ │  ├────────────┤  │     │
+│   │(Runner Token)│    + X-Import-Paths         │  │   Store    │  │     │
+│   │              │                             │  ├────────────┤  │     │
+│   │ ┌──────────┐ │                             │  │   Reaper   │  │     │
+│   │ │ Executor │ │                             │  └────────────┘  │     │
+│   │ │.py │ .sh │ │                             │        │         │     │
+│   │ └──────────┘ │                             │        ▼         │     │
+│   │ ┌────┐┌────┐ │                             │  ┌────────────┐  │     │
+│   │ │venv││ sh │ │                             │  │  SQLite    │  │     │
+│   │ └────┘└────┘ │                             │  │  (WAL)     │  │     │
+│   └──────────────┘                             │  └────────────┘  │     │
+│                                                │        │         │     │
+│                                                │        ▼         │     │
+│                                                │  ┌────────────┐  │     │
+│                                                │  │  Objects   │  │     │
+│                                                │  │  (Local)   │  │     │
+│                                                │  └────────────┘  │     │
+│                                                └──────────────────┘     │
+└──────────────────────────────────────────────────────────────────────────┘
+
+Deploy Flow (minitower-cli):
+  Towerfile ──▶ resolve globs ──▶ package tar.gz ──▶ upload version
+                                                        │
+                                  server extracts ◀─────┘
+                                  Towerfile from
+                                  artifact root
 
 Run Status Flow:
   queued ──▶ leased ──▶ running ──▶ completed
