@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -150,6 +151,52 @@ func TestRunnerFailsGracefullyOnArtifactSHA256Mismatch(t *testing.T) {
 	}
 }
 
+func TestRunnerStreamsBufferedPythonLogsBeforeExit(t *testing.T) {
+	python := requirePython(t)
+	requireTar(t)
+
+	artifact, sha := buildArtifact(t, "import time\nprint('first')\ntime.sleep(3)\nprint('second')\ntime.sleep(3)\n")
+
+	server := newRunnerServer(t, serverConfig{
+		artifact:       artifact,
+		artifactSHA256: sha,
+		heartbeatCode:  http.StatusOK,
+		logsCode:       http.StatusOK,
+		resultCode:     http.StatusOK,
+	})
+
+	runner := newTestRunner(t, "http://runner.test", python, server.handler)
+	lease := makeLease(time.Now().Add(10*time.Second), 20)
+
+	if err := runner.executeRun(context.Background(), lease); err != nil {
+		t.Fatalf("execute run: %v", err)
+	}
+
+	batches := server.snapshotLogBatches()
+	if len(batches) < 2 {
+		t.Fatalf("expected streamed log batches, got %d batch(es): %#v", len(batches), batches)
+	}
+
+	firstBatch := -1
+	secondBatch := -1
+	for i, batch := range batches {
+		for _, line := range batch {
+			if line == "first" && firstBatch == -1 {
+				firstBatch = i
+			}
+			if line == "second" && secondBatch == -1 {
+				secondBatch = i
+			}
+		}
+	}
+	if firstBatch == -1 || secondBatch == -1 {
+		t.Fatalf("missing expected lines in log batches: %#v", batches)
+	}
+	if firstBatch == secondBatch {
+		t.Fatalf("expected first/second in different batches, got batch %d: %#v", firstBatch, batches[firstBatch])
+	}
+}
+
 type serverConfig struct {
 	artifact       []byte
 	artifactSHA256 string
@@ -167,6 +214,9 @@ type runnerServer struct {
 	resultCalls      atomic.Int32
 	lastResultStatus string
 	lastResultError  *string
+
+	mu         sync.Mutex
+	logBatches [][]string
 }
 
 func newRunnerServer(t *testing.T, cfg serverConfig) *runnerServer {
@@ -209,6 +259,20 @@ func newRunnerServer(t *testing.T, cfg serverConfig) *runnerServer {
 		if r.Header.Get("X-Lease-Token") != testLease {
 			w.WriteHeader(http.StatusGone)
 			return
+		}
+		var payload struct {
+			Logs []struct {
+				Line string `json:"line"`
+			} `json:"logs"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err == nil {
+			lines := make([]string, 0, len(payload.Logs))
+			for _, entry := range payload.Logs {
+				lines = append(lines, entry.Line)
+			}
+			rs.mu.Lock()
+			rs.logBatches = append(rs.logBatches, lines)
+			rs.mu.Unlock()
 		}
 		if rs.cfg.logsCode != http.StatusOK {
 			w.WriteHeader(rs.cfg.logsCode)
@@ -253,6 +317,17 @@ func newRunnerServer(t *testing.T, cfg serverConfig) *runnerServer {
 
 	rs.handler = authHandler(mux)
 	return rs
+}
+
+func (rs *runnerServer) snapshotLogBatches() [][]string {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	out := make([][]string, len(rs.logBatches))
+	for i := range rs.logBatches {
+		out[i] = append([]string(nil), rs.logBatches[i]...)
+	}
+	return out
 }
 
 func authHandler(next http.Handler) http.Handler {

@@ -440,7 +440,8 @@ func (r *Runner) runProcess(ctx context.Context, runCtx context.Context, cancel 
 		cmd = exec.Command("/bin/sh", entrypoint)
 	} else {
 		pythonBin := filepath.Join(ws.Dir, ".venv", "bin", "python")
-		cmd = exec.Command(pythonBin, entrypoint)
+		// Force unbuffered Python stdio so logs stream during execution.
+		cmd = exec.Command(pythonBin, "-u", entrypoint)
 	}
 	cmd.Dir = ws.Dir
 
