@@ -65,9 +65,9 @@ curl -s http://localhost:8080/api/v1/apps/hello-world \
 
 ## Versions
 
-### Create Version
+### Deploy with CLI (Recommended)
 
-First, create a Python script and package it:
+Create a project directory with a `Towerfile`:
 ```bash
 mkdir -p /tmp/myapp
 cat > /tmp/myapp/main.py << 'EOF'
@@ -75,16 +75,46 @@ import os, json
 input_data = json.loads(os.environ.get("MINITOWER_INPUT", "{}"))
 print(f"Hello, {input_data.get('name', 'World')}!")
 EOF
-tar -czf /tmp/myapp/artifact.tar.gz -C /tmp/myapp main.py
+
+cat > /tmp/myapp/Towerfile << 'EOF'
+[app]
+name = "hello-world"
+script = "main.py"
+source = ["./*.py"]
+
+[app.timeout]
+seconds = 60
+
+[[parameters]]
+name = "name"
+description = "Name to greet"
+type = "string"
+default = "World"
+EOF
 ```
 
-Upload the version:
+Deploy (auto-creates app if needed, packages artifact, uploads version):
 ```bash
+minitower-cli deploy --server http://localhost:8080 --token $TOKEN --dir /tmp/myapp
+```
+
+Or use environment variables:
+```bash
+export MINITOWER_SERVER_URL=http://localhost:8080
+export MINITOWER_API_TOKEN=$TOKEN
+minitower-cli deploy --dir /tmp/myapp
+```
+
+### Upload Version via curl
+
+The artifact must be a tar.gz containing a `Towerfile` at its root.
+All metadata (entrypoint, timeout, params) is extracted from the Towerfile.
+
+```bash
+tar -czf /tmp/myapp/artifact.tar.gz -C /tmp/myapp main.py Towerfile
 curl -s -X POST http://localhost:8080/api/v1/apps/hello-world/versions \
   -H "Authorization: Bearer $TOKEN" \
-  -F "artifact=@/tmp/myapp/artifact.tar.gz" \
-  -F "entrypoint=main.py" \
-  -F "timeout_seconds=60"
+  -F "artifact=@/tmp/myapp/artifact.tar.gz"
 ```
 
 ### List Versions

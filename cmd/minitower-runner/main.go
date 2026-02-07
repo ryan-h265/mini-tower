@@ -298,66 +298,80 @@ func (r *Runner) poll(ctx context.Context) error {
 	return r.executeRun(ctx, &lease)
 }
 
+// workspaceResult holds the prepared workspace details.
+type workspaceResult struct {
+	Dir         string
+	ImportPaths []string
+	Cleanup     func()
+}
+
 // prepareWorkspace creates a temp directory, downloads and unpacks the artifact,
-// creates a venv, and installs requirements. Returns the work directory and a
-// cleanup function. Propagates ErrStaleLease from download; other errors are
-// submitted as user-facing failure messages.
-func (r *Runner) prepareWorkspace(ctx context.Context, lease *LeaseResponse) (string, func(), error) {
+// and (for Python entrypoints) creates a venv and installs requirements.
+// Returns the workspace result. Propagates ErrStaleLease from download; other
+// errors are submitted as user-facing failure messages.
+func (r *Runner) prepareWorkspace(ctx context.Context, lease *LeaseResponse) (*workspaceResult, error) {
 	workDir, err := os.MkdirTemp("", fmt.Sprintf("minitower-run-%d-", lease.RunID))
 	if err != nil {
 		if submitErr := r.submitFailure(ctx, lease, "failed to create workspace"); submitErr != nil {
-			return "", nil, submitErr
+			return nil, submitErr
 		}
-		return "", nil, err
+		return nil, err
 	}
 	cleanup := func() { os.RemoveAll(workDir) }
 
-	sha256Hash, err := r.downloadArtifact(ctx, lease, filepath.Join(workDir, "artifact.tar.gz"))
+	dl, err := r.downloadArtifact(ctx, lease, filepath.Join(workDir, "artifact.tar.gz"))
 	if err != nil {
 		r.logger.Error("artifact download failed", "error", err)
 		cleanup()
 		if errors.Is(err, ErrStaleLease) {
-			return "", nil, ErrStaleLease
+			return nil, ErrStaleLease
 		}
 		if submitErr := r.submitFailure(ctx, lease, "failed to download artifact"); submitErr != nil {
-			return "", nil, submitErr
+			return nil, submitErr
 		}
-		return "", nil, err
+		return nil, err
 	}
 
 	if err := r.unpackArtifact(filepath.Join(workDir, "artifact.tar.gz"), workDir); err != nil {
 		r.logger.Error("unpack failed", "error", err)
 		cleanup()
 		if submitErr := r.submitFailure(ctx, lease, "failed to unpack artifact"); submitErr != nil {
-			return "", nil, submitErr
+			return nil, submitErr
 		}
-		return "", nil, err
+		return nil, err
 	}
-	r.logger.Info("artifact unpacked", "sha256", sha256Hash)
+	r.logger.Info("artifact unpacked", "sha256", dl.SHA256)
 
-	venvPath := filepath.Join(workDir, ".venv")
-	if err := r.createVenv(ctx, venvPath); err != nil {
-		r.logger.Error("venv creation failed", "error", err)
-		cleanup()
-		if submitErr := r.submitFailure(ctx, lease, "failed to create venv"); submitErr != nil {
-			return "", nil, submitErr
-		}
-		return "", nil, err
-	}
-
-	reqPath := filepath.Join(workDir, "requirements.txt")
-	if _, err := os.Stat(reqPath); err == nil {
-		if err := r.installRequirements(ctx, venvPath, reqPath); err != nil {
-			r.logger.Error("requirements install failed", "error", err)
+	// Only set up Python venv for .py entrypoints.
+	if strings.HasSuffix(lease.Entrypoint, ".py") {
+		venvPath := filepath.Join(workDir, ".venv")
+		if err := r.createVenv(ctx, venvPath); err != nil {
+			r.logger.Error("venv creation failed", "error", err)
 			cleanup()
-			if submitErr := r.submitFailure(ctx, lease, "failed to install requirements"); submitErr != nil {
-				return "", nil, submitErr
+			if submitErr := r.submitFailure(ctx, lease, "failed to create venv"); submitErr != nil {
+				return nil, submitErr
 			}
-			return "", nil, err
+			return nil, err
+		}
+
+		reqPath := filepath.Join(workDir, "requirements.txt")
+		if _, err := os.Stat(reqPath); err == nil {
+			if err := r.installRequirements(ctx, venvPath, reqPath); err != nil {
+				r.logger.Error("requirements install failed", "error", err)
+				cleanup()
+				if submitErr := r.submitFailure(ctx, lease, "failed to install requirements"); submitErr != nil {
+					return nil, submitErr
+				}
+				return nil, err
+			}
 		}
 	}
 
-	return workDir, cleanup, nil
+	return &workspaceResult{
+		Dir:         workDir,
+		ImportPaths: dl.ImportPaths,
+		Cleanup:     cleanup,
+	}, nil
 }
 
 // runHeartbeat runs the heartbeat loop until the run context is cancelled.
@@ -412,22 +426,38 @@ func (r *Runner) runHeartbeat(runCtx context.Context, lease *LeaseResponse, stat
 
 // runProcess sets up and runs the user process, streams logs, and submits the final result.
 // The heartbeat goroutine is already running; heartbeatDone closes when it exits.
-func (r *Runner) runProcess(ctx context.Context, runCtx context.Context, cancel context.CancelFunc, lease *LeaseResponse, state *runState, workDir string, heartbeatDone <-chan struct{}, baseTerminate func(string)) error {
-	venvPath := filepath.Join(workDir, ".venv")
-	pythonBin := filepath.Join(venvPath, "bin", "python")
-	entrypoint := filepath.Join(workDir, lease.Entrypoint)
+func (r *Runner) runProcess(ctx context.Context, runCtx context.Context, cancel context.CancelFunc, lease *LeaseResponse, state *runState, ws *workspaceResult, heartbeatDone <-chan struct{}, baseTerminate func(string)) error {
+	entrypoint := filepath.Join(ws.Dir, lease.Entrypoint)
 
 	timeout := defaultTimeout
 	if lease.TimeoutSeconds != nil {
 		timeout = time.Duration(*lease.TimeoutSeconds) * time.Second
 	}
 
-	cmd := exec.Command(pythonBin, entrypoint)
-	cmd.Dir = workDir
+	// Build the command based on entrypoint extension.
+	var cmd *exec.Cmd
+	if strings.HasSuffix(lease.Entrypoint, ".sh") {
+		cmd = exec.Command("/bin/sh", entrypoint)
+	} else {
+		pythonBin := filepath.Join(ws.Dir, ".venv", "bin", "python")
+		cmd = exec.Command(pythonBin, entrypoint)
+	}
+	cmd.Dir = ws.Dir
 
+	cmd.Env = os.Environ()
 	if lease.Input != nil {
 		inputJSON, _ := json.Marshal(lease.Input)
-		cmd.Env = append(os.Environ(), "MINITOWER_INPUT="+string(inputJSON))
+		cmd.Env = append(cmd.Env, "MINITOWER_INPUT="+string(inputJSON))
+	}
+
+	// For Python entrypoints, prepend import paths to PYTHONPATH.
+	if strings.HasSuffix(lease.Entrypoint, ".py") && len(ws.ImportPaths) > 0 {
+		resolved := make([]string, len(ws.ImportPaths))
+		for i, p := range ws.ImportPaths {
+			resolved[i] = filepath.Join(ws.Dir, p)
+		}
+		pythonPath := strings.Join(resolved, ":") + ":" + os.Getenv("PYTHONPATH")
+		cmd.Env = append(cmd.Env, "PYTHONPATH="+pythonPath)
 	}
 
 	stdout, _ := cmd.StdoutPipe()
@@ -575,7 +605,7 @@ func (r *Runner) executeRun(ctx context.Context, lease *LeaseResponse) error {
 	}()
 
 	// Prepare workspace
-	workDir, cleanup, err := r.prepareWorkspace(runCtx, lease)
+	ws, err := r.prepareWorkspace(runCtx, lease)
 	if err != nil {
 		cancel()
 		<-heartbeatDone
@@ -586,9 +616,9 @@ func (r *Runner) executeRun(ctx context.Context, lease *LeaseResponse) error {
 		// submitFailure already called inside prepareWorkspace
 		return nil
 	}
-	defer cleanup()
+	defer ws.Cleanup()
 
-	return r.runProcess(ctx, runCtx, cancel, lease, state, workDir, heartbeatDone, terminate)
+	return r.runProcess(ctx, runCtx, cancel, lease, state, ws, heartbeatDone, terminate)
 }
 
 type AttemptResponse struct {
@@ -654,47 +684,60 @@ func (r *Runner) heartbeat(ctx context.Context, lease *LeaseResponse) (*AttemptR
 	return &result, nil
 }
 
-func (r *Runner) downloadArtifact(ctx context.Context, lease *LeaseResponse, destPath string) (string, error) {
+// downloadResult holds the artifact download metadata.
+type downloadResult struct {
+	SHA256      string
+	ImportPaths []string
+}
+
+func (r *Runner) downloadArtifact(ctx context.Context, lease *LeaseResponse, destPath string) (*downloadResult, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/api/v1/runs/%d/artifact", r.cfg.ServerURL, lease.RunID), nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+r.token)
 	req.Header.Set("X-Lease-Token", lease.LeaseToken)
 
 	resp, err := r.httpClient.Do(req)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		if isStaleLeaseStatus(resp.StatusCode) {
-			return "", ErrStaleLease
+			return nil, ErrStaleLease
 		}
 		respBody, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("download failed: %d %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("download failed: %d %s", resp.StatusCode, string(respBody))
 	}
 
 	expectedSHA256 := resp.Header.Get("X-Artifact-SHA256")
 
 	f, err := os.Create(destPath)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer f.Close()
 
 	hasher := sha256.New()
 	if _, err := io.Copy(io.MultiWriter(f, hasher), resp.Body); err != nil {
-		return "", err
+		return nil, err
 	}
 
 	actualSHA256 := hex.EncodeToString(hasher.Sum(nil))
 	if expectedSHA256 != "" && actualSHA256 != expectedSHA256 {
-		return "", fmt.Errorf("sha256 mismatch: expected %s, got %s", expectedSHA256, actualSHA256)
+		return nil, fmt.Errorf("sha256 mismatch: expected %s, got %s", expectedSHA256, actualSHA256)
 	}
 
-	return actualSHA256, nil
+	result := &downloadResult{SHA256: actualSHA256}
+	if raw := resp.Header.Get("X-Import-Paths"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &result.ImportPaths); err != nil {
+			r.logger.Warn("invalid X-Import-Paths header", "error", err)
+		}
+	}
+
+	return result, nil
 }
 
 func (r *Runner) unpackArtifact(artifactPath, destDir string) error {

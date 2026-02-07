@@ -186,13 +186,6 @@ export const apiClient = {
   createVersion(appSlug: string, payload: CreateVersionRequest): Promise<VersionResponse> {
     const formData = new FormData()
     formData.set('artifact', payload.artifact)
-    formData.set('entrypoint', payload.entrypoint)
-    if (payload.timeout_seconds !== undefined) {
-      formData.set('timeout_seconds', String(payload.timeout_seconds))
-    }
-    if (payload.params_schema_json && payload.params_schema_json.trim() !== '') {
-      formData.set('params_schema_json', payload.params_schema_json)
-    }
 
     return request<VersionResponse>(`/api/v1/apps/${encodeURIComponent(appSlug)}/versions`, {
       method: 'POST',

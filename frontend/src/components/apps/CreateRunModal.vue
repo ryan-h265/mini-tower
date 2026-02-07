@@ -17,6 +17,7 @@ interface SchemaField {
   required: boolean
   description?: string
   enumValues?: Array<string | number | boolean>
+  defaultValue?: unknown
 }
 
 const props = withDefaults(
@@ -73,7 +74,7 @@ const schemaFields = computed<SchemaField[]>(() => {
     })
     .map(([name, details]) => {
       const enumValues = Array.isArray(details.enum) ? details.enum.filter((v): v is string | number | boolean => typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') : undefined
-      return { name, kind: normalizeType(details.type), required: requiredNames.has(name), description: typeof details.description === 'string' ? details.description : undefined, enumValues: enumValues && enumValues.length > 0 ? enumValues : undefined }
+      return { name, kind: normalizeType(details.type), required: requiredNames.has(name), description: typeof details.description === 'string' ? details.description : undefined, enumValues: enumValues && enumValues.length > 0 ? enumValues : undefined, defaultValue: details.default }
     })
 })
 
@@ -90,7 +91,12 @@ function parsedRawInput(): Record<string, unknown> {
   return parsed as Record<string, unknown>
 }
 
-function defaultFieldValue(kind: SchemaField['kind']): string | number | boolean | '' {
+function defaultFieldValue(kind: SchemaField['kind'], schemaDefault?: unknown): string | number | boolean | '' {
+  if (schemaDefault !== undefined && schemaDefault !== null) {
+    if (kind === 'boolean') return Boolean(schemaDefault)
+    if (kind === 'number' || kind === 'integer') return typeof schemaDefault === 'number' ? schemaDefault : Number(schemaDefault)
+    return String(schemaDefault)
+  }
   if (kind === 'boolean') return false
   return ''
 }
@@ -99,7 +105,7 @@ function syncFormValues(baseInput: Record<string, unknown>): void {
   const next: Record<string, string | number | boolean | ''> = {}
   for (const field of schemaFields.value) {
     const value = baseInput[field.name]
-    if (value === undefined || value === null) { next[field.name] = defaultFieldValue(field.kind); continue }
+    if (value === undefined || value === null) { next[field.name] = defaultFieldValue(field.kind, field.defaultValue); continue }
     if (field.kind === 'boolean') { next[field.name] = Boolean(value); continue }
     if (field.kind === 'number' || field.kind === 'integer') { next[field.name] = typeof value === 'number' ? value : Number(value); continue }
     next[field.name] = String(value)
@@ -172,7 +178,7 @@ function submit(): void {
         <select v-model.number="selectedVersionNo" :disabled="busy || versions.length === 0" class="select">
           <option :value="null" disabled>Select a version</option>
           <option v-for="version in versions" :key="version.version_id" :value="version.version_no">
-            v{{ version.version_no }} - {{ version.entrypoint }}
+            v{{ version.version_no }} - {{ version.entrypoint }}{{ version.towerfile_toml ? ' (Towerfile)' : '' }}
           </option>
         </select>
       </label>

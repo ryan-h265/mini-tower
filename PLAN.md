@@ -84,7 +84,7 @@ Deferred features are **intentionally excluded** to minimize the failure surface
 1. `Team`: tenant boundary (bootstrap-created once).
 2. `Environment`: one row per team for `default`.
 3. `App`: logical workload identity.
-4. `AppVersion`: immutable packaged artifact spec (`artifact_object_key`, `artifact_sha256`, `entrypoint`, `timeout_seconds`, optional params schema).
+4. `AppVersion`: immutable packaged artifact spec (`artifact_object_key`, `artifact_sha256`, `entrypoint`, `timeout_seconds`, optional params schema, `towerfile_toml`, `import_paths_json`). Metadata is extracted from a `Towerfile` inside the artifact at upload time.
 5. `Run`: lifecycle state for execution request.
 6. `RunAttempt`: retry attempt with lease identity.
 7. `Runner`: self-hosted worker with an environment label (platform-level, not team-bound).

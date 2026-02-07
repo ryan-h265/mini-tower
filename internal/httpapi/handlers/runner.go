@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -436,6 +437,11 @@ func (h *Handlers) GetArtifact(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Entrypoint", version.Entrypoint)
 	if version.TimeoutSeconds != nil {
 		w.Header().Set("X-Timeout-Seconds", strconv.Itoa(*version.TimeoutSeconds))
+	}
+	if len(version.ImportPaths) > 0 {
+		if data, err := json.Marshal(version.ImportPaths); err == nil {
+			w.Header().Set("X-Import-Paths", string(data))
+		}
 	}
 
 	io.Copy(w, reader)

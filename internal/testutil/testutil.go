@@ -105,7 +105,7 @@ func CreateVersion(t *testing.T, s *store.Store, appID int64) *store.AppVersion 
 	t.Helper()
 	ctx := context.Background()
 
-	version, err := s.CreateVersion(ctx, appID, "objects/fixture.tar.gz", "sha256", "main.py", nil, nil)
+	version, err := s.CreateVersion(ctx, appID, "objects/fixture.tar.gz", "sha256", "main.py", nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("create version: %v", err)
 	}

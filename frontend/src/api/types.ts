@@ -74,6 +74,8 @@ export interface VersionResponse {
   timeout_seconds?: number
   params_schema?: Record<string, unknown>
   artifact_sha256: string
+  towerfile_toml?: string
+  import_paths?: string[]
   created_at: string
 }
 
@@ -83,9 +85,6 @@ export interface ListVersionsResponse {
 
 export interface CreateVersionRequest {
   artifact: File
-  entrypoint: string
-  timeout_seconds?: number
-  params_schema_json?: string
 }
 
 export interface RunResponse {

@@ -22,10 +22,6 @@ const activeTab = ref<AppTab>('overview')
 const isCreateRunModalOpen = ref(false)
 const createRunError = ref('')
 const uploadError = ref('')
-
-const entrypoint = ref('run.sh')
-const timeoutSeconds = ref<number | ''>('')
-const paramsSchemaJson = ref('')
 const artifact = ref<File | null>(null)
 
 watch(
@@ -164,19 +160,11 @@ const createRunMutation = useMutation({
 const uploadVersionMutation = useMutation({
   mutationFn: async () => {
     if (!artifact.value) throw new Error('Artifact file is required.')
-    const timeoutValue = typeof timeoutSeconds.value === 'number' ? timeoutSeconds.value : undefined
-    const schemaValue = paramsSchemaJson.value.trim()
-    if (schemaValue !== '') { try { JSON.parse(schemaValue) } catch { throw new Error('params_schema_json must be valid JSON.') } }
-    return apiClient.createVersion(appSlug.value, {
-      artifact: artifact.value,
-      entrypoint: entrypoint.value.trim(),
-      timeout_seconds: timeoutValue,
-      params_schema_json: schemaValue === '' ? undefined : schemaValue
-    })
+    return apiClient.createVersion(appSlug.value, { artifact: artifact.value })
   },
   onError: (error) => { uploadError.value = error instanceof Error ? error.message : 'Failed to upload version' },
   onSuccess: async () => {
-    artifact.value = null; timeoutSeconds.value = ''; paramsSchemaJson.value = ''; uploadError.value = ''
+    artifact.value = null; uploadError.value = ''
     await queryClient.invalidateQueries({ queryKey: ['app-versions', appSlug.value] })
     setTab('versions')
   }
@@ -187,7 +175,6 @@ function openCreateRunModal(): void { createRunError.value = ''; isCreateRunModa
 function submitCreateRun(payload: CreateRunRequest): void { createRunError.value = ''; void createRunMutation.mutateAsync({ payload }) }
 function submitVersionUpload(): void {
   uploadError.value = ''
-  if (!entrypoint.value.trim()) { uploadError.value = 'Entrypoint is required.'; return }
   if (!artifact.value) { uploadError.value = 'Artifact file is required.'; return }
   void uploadVersionMutation.mutateAsync()
 }
@@ -307,11 +294,9 @@ function submitVersionUpload(): void {
     <template v-if="activeTab === 'versions'">
       <section class="card panel">
         <h2>Upload New Version</h2>
+        <p class="upload-hint">Upload a tar.gz artifact containing a Towerfile at its root.</p>
         <ErrorBanner v-if="uploadError" :message="uploadError" />
         <form class="upload-grid" @submit.prevent="submitVersionUpload">
-          <label class="field"><span>Entrypoint</span><input v-model="entrypoint" type="text" placeholder="run.sh" /></label>
-          <label class="field"><span>Timeout Seconds</span><input v-model.number="timeoutSeconds" type="number" min="1" /></label>
-          <label class="field full"><span>Params Schema JSON</span><textarea v-model="paramsSchemaJson" rows="4" placeholder='{"type":"object","properties":{"name":{"type":"string"}}}' /></label>
           <div class="full"><FileDropZone @file-selected="onArtifactSelected" /><p class="hint">Selected: {{ artifact?.name ?? 'None' }}</p></div>
           <div class="full actions">
             <button type="submit" class="btn btn-primary" :disabled="uploadVersionMutation.isPending.value">
@@ -327,6 +312,8 @@ function submitVersionUpload(): void {
           <div v-for="v in versions" :key="v.version_id" class="ver-row">
             <span class="chip chip-sm">V{{ v.version_no }}</span>
             <span class="ver-entry">{{ v.entrypoint }}</span>
+            <span v-if="v.towerfile_toml" class="chip chip-sm chip-towerfile">Towerfile</span>
+            <span v-else class="chip chip-sm chip-legacy">Legacy</span>
             <span class="ver-sha mono">{{ v.artifact_sha256.slice(0, 12) }}...</span>
             <span class="ver-time">{{ formatTimestamp(v.created_at) }}</span>
           </div>
@@ -542,7 +529,7 @@ textarea { resize: vertical; font-family: var(--font-mono); font-size: 0.82rem; 
 .ver-list { display: grid; gap: 0.4rem; }
 .ver-row {
   display: grid;
-  grid-template-columns: auto 1fr auto auto;
+  grid-template-columns: auto 1fr auto auto auto;
   gap: 0.75rem;
   align-items: center;
   padding: 0.5rem 0;
@@ -552,6 +539,9 @@ textarea { resize: vertical; font-family: var(--font-mono); font-size: 0.82rem; 
 .ver-entry { color: var(--text-secondary); }
 .ver-sha { color: var(--text-tertiary); font-size: 0.75rem; }
 .ver-time { color: var(--text-tertiary); font-size: 0.75rem; }
+.chip-towerfile { color: var(--accent-green); border-color: color-mix(in srgb, var(--accent-green) 30%, var(--border-default)); }
+.chip-legacy { color: var(--text-tertiary); }
+.upload-hint { margin: 0; font-size: 0.82rem; color: var(--text-secondary); }
 
 @media (max-width: 800px) {
   .overview-grid { grid-template-columns: 1fr; }

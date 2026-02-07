@@ -46,6 +46,7 @@ log "  Port: $PORT"
 log "Building binaries..."
 go build -o "$WORKDIR/minitowerd" ./cmd/minitowerd
 go build -o "$WORKDIR/minitower-runner" ./cmd/minitower-runner
+go build -o "$WORKDIR/minitower-cli" ./cmd/minitower-cli
 
 # Start server
 log "Starting control plane..."
@@ -94,22 +95,10 @@ if [ -z "$TOKEN" ]; then
 fi
 log "Team bootstrapped"
 
-# Create app
-log "Creating app..."
-APP_RESP=$(curl -s -X POST "http://localhost:$PORT/api/v1/apps" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"slug":"smoke-app","description":"Smoke test app"}')
-
-if ! echo "$APP_RESP" | grep -q '"slug":"smoke-app"'; then
-  fail "Create app failed: $APP_RESP"
-fi
-log "App created"
-
-# Create artifact
-log "Creating artifact..."
-mkdir -p "$WORKDIR/artifact"
-cat > "$WORKDIR/artifact/main.py" << 'PYTHON'
+# Create project with Towerfile
+log "Creating Towerfile project..."
+mkdir -p "$WORKDIR/project"
+cat > "$WORKDIR/project/main.py" << 'PYTHON'
 #!/usr/bin/env python3
 import os
 import json
@@ -122,20 +111,34 @@ print(f"Hello, {name}!")
 print("Smoke test completed successfully")
 PYTHON
 
-tar -czf "$WORKDIR/artifact.tar.gz" -C "$WORKDIR/artifact" main.py
+cat > "$WORKDIR/project/Towerfile" << 'TOML'
+[app]
+name = "smoke-app"
+script = "main.py"
+source = ["./*.py"]
 
-# Upload version
-log "Uploading version..."
-VERSION_RESP=$(curl -s -X POST "http://localhost:$PORT/api/v1/apps/smoke-app/versions" \
-  -H "Authorization: Bearer $TOKEN" \
-  -F "artifact=@$WORKDIR/artifact.tar.gz" \
-  -F "entrypoint=main.py" \
-  -F "timeout_seconds=30")
+[app.timeout]
+seconds = 30
 
-if ! echo "$VERSION_RESP" | grep -q '"version_no"'; then
-  fail "Upload version failed: $VERSION_RESP"
+[[parameters]]
+name = "name"
+description = "Name to greet"
+type = "string"
+default = "World"
+TOML
+
+# Deploy using CLI (auto-creates app and uploads version)
+log "Deploying with minitower-cli..."
+DEPLOY_OUTPUT=$("$WORKDIR/minitower-cli" deploy \
+  --server "http://localhost:$PORT" \
+  --token "$TOKEN" \
+  --dir "$WORKDIR/project" 2>&1)
+
+if [ $? -ne 0 ]; then
+  fail "CLI deploy failed: $DEPLOY_OUTPUT"
 fi
-log "Version uploaded"
+echo "$DEPLOY_OUTPUT"
+log "Deploy succeeded"
 
 # Create run
 log "Creating run..."

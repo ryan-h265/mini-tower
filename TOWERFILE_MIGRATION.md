@@ -64,7 +64,7 @@ Format: TOML. File name: `Towerfile` (no extension). Must be at the project root
 
 | Field          | Type       | Required | Description |
 |----------------|------------|----------|-------------|
-| `name`         | string     | yes      | App slug. Must match `[a-z0-9][a-z0-9-]*` (existing slug rules). Used to resolve or auto-create the target app on the server. |
+| `name`         | string     | yes      | App slug. Must match `^[a-z][a-z0-9-]{2,31}$` (must start with a lowercase letter, 3-32 chars; existing `validate.ValidateSlug()` rules). Used to resolve or auto-create the target app on the server. |
 | `script`       | string     | yes      | Relative path to the entrypoint. Must end in `.py` or `.sh`. Must be matched by at least one `source` glob. Shell entrypoints are supported and executed via `/bin/sh` (shebang ignored). |
 | `source`       | [string]   | no       | Glob patterns for files to include. Relative to the Towerfile directory. If omitted, defaults to `["./**"]` (all files). Towerfile itself is always included. See “Glob semantics” below. |
 | `import_paths` | [string]   | no       | Extra directories to prepend to `PYTHONPATH` at runtime. Relative to the unpacked artifact root. |
@@ -106,16 +106,20 @@ Implement globs using `github.com/bmatcuk/doublestar/v4` to match Tower.dev-styl
 
 ### Validation Rules
 
-1. `name` must pass existing `validate.Slug()` rules.
+1. `name` must pass existing `validate.ValidateSlug()` rules.
 2. `script` path must be matched by at least one `source` glob (or exist in
    the default glob set).
 3. `source` patterns must not escape the project root (`../` is rejected).
 4. Parameter names must be unique.
 5. `import_paths` entries must not escape the project root.
-6. If a parameter `default` is provided, attempt to coerce it to the declared
-   `type` (or the default type `string`) using safe conversions (e.g., `"1"`
-   → `integer`, `"true"` → `boolean`). If coercion fails, return a validation
-   error.
+6. If a parameter `default` is provided, validate that its TOML-native type is
+   compatible with the declared `type` (or the default type `string`). TOML
+   already parses values into typed representations (`default = 1` is an
+   integer, `default = "hello"` is a string), so the validator checks
+   compatibility rather than coercing strings. For example: a TOML integer
+   `default = 1` is valid for `type = "integer"` or `type = "number"`, but
+   invalid for `type = "boolean"`. If the types are incompatible, return a
+   validation error.
 7. Parameter `type` must be one of: `string`, `number`, `integer`, `boolean`.
 
 ---
@@ -135,7 +139,8 @@ New package: `internal/towerfile`
 **Types:**
 ```go
 type Towerfile struct {
-    App App `toml:"app"`
+    App        App         `toml:"app"`
+    Parameters []Parameter `toml:"parameters"`
 }
 
 type App struct {
@@ -158,8 +163,8 @@ type Parameter struct {
 }
 ```
 
-Note: `[[parameters]]` are top-level in the TOML array-of-tables syntax, so
-the `Towerfile` struct needs a `Parameters []Parameter` field alongside `App`.
+Note: `[[parameters]]` uses TOML array-of-tables syntax and is a top-level
+key, so `Parameters` lives on the `Towerfile` struct (not nested under `App`).
 
 **Dependency:** Add `github.com/BurntSushi/toml` to `go.mod` (the standard Go
 TOML library, pure Go, no CGo).
@@ -269,10 +274,23 @@ Add a second code path to `CreateVersion` in
 The server:
 1. Accepts the artifact.
 2. Opens the tar.gz and reads the `Towerfile` from the archive root.
-3. Parses it to extract `script`, `timeout`, `parameters`, and `import_paths`.
-4. Synthesizes `params_schema_json` from `[[parameters]]`.
-5. Uses those values as the source of truth for the version.
-6. Stores the Towerfile content in a new `towerfile_toml` column (see 4b).
+3. Parses it using `internal/towerfile.Parse()` to extract `script`, `timeout`,
+   `parameters`, and `import_paths`.
+4. Synthesizes `params_schema_json` from `[[parameters]]` using a shared
+   helper in the `internal/towerfile` package:
+   ```go
+   // ParamsSchemaFromParameters converts []Parameter into a JSON Schema
+   // map[string]any suitable for storing as params_schema_json.
+   func ParamsSchemaFromParameters(params []Parameter) (map[string]any, error)
+   ```
+   This is the same mapping logic described in Phase 3's "Parameter-to-schema
+   mapping" section. Both the CLI and the server use this single function to
+   ensure consistent schema generation.
+5. Populates the existing `entrypoint` column from the Towerfile's `script`
+   field (the column remains `NOT NULL`; it is still written, just sourced
+   from the Towerfile instead of a form field).
+6. Uses those values as the source of truth for the version.
+7. Stores the raw Towerfile content in a new `towerfile_toml` column (see 4b).
 
 **Failure behavior:** if the Towerfile is missing or invalid, return HTTP 400
 with a structured error code (e.g., `TOWERFILE_MISSING`, `TOWERFILE_INVALID`)
@@ -290,6 +308,12 @@ ALTER TABLE app_versions ADD COLUMN import_paths_json TEXT;
 - `towerfile_toml`: raw Towerfile content, stored for auditability and display.
 - `import_paths_json`: JSON array of import paths, used by the runner at
   execution time.
+
+Note: the existing `entrypoint TEXT NOT NULL` column is kept as-is. The server
+continues to populate it from the Towerfile's `script` field so that existing
+queries (runner artifact download, version listings) work without changes.
+The only difference is the value now comes from Towerfile parsing instead of a
+form field.
 
 #### 4c. Store layer changes (`internal/store/versions.go`)
 
@@ -362,7 +386,9 @@ Add a new test case that:
 3. Triggers a run.
 4. Verifies completion and log output.
 
-Remove the existing manual-tar test case (legacy mode is no longer supported).
+Remove the existing manual-tar test case **only after Phase 4 is merged** and
+the legacy upload path is gone. Until then, keep both test cases so CI
+validates the active code path.
 
 #### 6b. Update `Dockerfile`
 
@@ -506,7 +532,7 @@ watch(selectedVersionNo, () => {
 
 | File / Package | Change Type | Description |
 |----------------|-------------|-------------|
-| `go.mod` | modify | Add `github.com/BurntSushi/toml` dependency |
+| `go.mod` | modify | Add `github.com/BurntSushi/toml` and `github.com/bmatcuk/doublestar/v4` dependencies |
 | `internal/towerfile/towerfile.go` | **new** | Towerfile types, parser, validator |
 | `internal/towerfile/towerfile_test.go` | **new** | Parser and validator tests |
 | `internal/towerfile/resolve.go` | **new** | Source glob resolution |
@@ -541,12 +567,15 @@ Towerfile-in-artifact path becomes the only supported upload path.
 
 1. Merge Phase 1-2 (parser + packager) — no server changes, fully testable in
    isolation.
-2. Merge Phase 3 (CLI) — requires Phase 4 on the server since it uploads
-   artifact-only Towerfile bundles.
-3. Merge Phase 4 (server Towerfile awareness) — enables artifact-only upload
-   and persists Towerfile metadata.
-4. Merge Phase 5 (runner import paths) — depends on Phase 4 header.
-5. Merge Phase 6 (tests/docs) — can be incremental throughout.
+2. Merge Phase 4 (server Towerfile awareness) — enables artifact-only upload
+   and persists Towerfile metadata. Must land before the CLI since the CLI
+   sends artifact-only uploads that require server-side Towerfile extraction.
+3. Merge Phase 3 (CLI) — depends on Phase 4 being deployed; the CLI uploads
+   artifact-only bundles that the server must know how to unpack.
+4. Merge Phase 5 (runner import paths) — depends on Phase 4e header.
+5. Merge Phase 6 (tests/docs) — can be incremental throughout, but the legacy
+   smoke test case should only be removed after Phase 4 is merged and the
+   legacy upload path is gone (see note in Phase 6a).
 6. Merge Phase 7 (frontend) — depends on Phase 4d API response changes. The
    parameter defaults fix (7d) is independently mergeable at any time.
 
@@ -566,7 +595,7 @@ have `towerfile_toml = NULL`.
 | Large source trees produce huge artifacts | Enforce existing `MINITOWER_MAX_ARTIFACT_SIZE` (100 MB). Add `.towerignore` support in a future iteration if needed. |
 | Glob patterns match unexpected files (secrets, `.env`) | Document recommended patterns. Default `source` excludes dotfiles and common ignore patterns in a future iteration. For now, explicit `source` patterns are the safe path. |
 | Towerfile-in-artifact parsing adds server-side tar scanning | Only scan the first N entries and cap Towerfile size; reject if not found within the first N entries. |
-| CLI auto-creating apps could cause slug collisions | CLI reports clear error on conflict. `name` validation reuses existing `validate.Slug()` rules. |
+| CLI auto-creating apps could cause slug collisions | CLI reports clear error on conflict. `name` validation reuses existing `validate.ValidateSlug()` rules. |
 
 ---
 
@@ -587,16 +616,16 @@ have `towerfile_toml = NULL`.
 ## 9. Implementation Order Checklist
 
 - [ ] **Phase 1:** `internal/towerfile` parser, types, validator, tests
-- [ ] **Phase 2:** `internal/towerfile` packager, glob resolver, tests
-- [ ] **Phase 3:** `cmd/minitower-cli` deploy command
-- [ ] **Phase 4a:** Server artifact-only upload path (Towerfile extraction)
+- [ ] **Phase 2:** `internal/towerfile` packager, glob resolver, `ParamsSchemaFromParameters`, tests
 - [ ] **Phase 4b:** Database migration `0004_towerfile.up.sql`
 - [ ] **Phase 4c:** Store layer updates for new columns
+- [ ] **Phase 4a:** Server artifact-only upload path (Towerfile extraction)
 - [ ] **Phase 4d:** API response updates
 - [ ] **Phase 4e:** Artifact download `X-Import-Paths` header
+- [ ] **Phase 3:** `cmd/minitower-cli` deploy command (depends on Phase 4 being deployed)
 - [ ] **Phase 5:** Runner `PYTHONPATH` setup from import paths
-- [ ] **Phase 6:** Smoke test, Dockerfile, documentation updates
+- [ ] **Phase 6:** Smoke test (add Towerfile case; remove legacy case after Phase 4 lands), Dockerfile, docs
 - [ ] **Phase 7a:** Frontend TypeScript types (`VersionResponse`, `CreateVersionRequest`)
 - [ ] **Phase 7b:** Frontend version upload form (remove legacy fields)
 - [ ] **Phase 7c:** Frontend version list display (Towerfile badge, detail expand)
-- [ ] **Phase 7d:** Frontend run creation parameter defaults from schema
+- [ ] **Phase 7d:** Frontend run creation parameter defaults from schema (independently mergeable)
