@@ -51,6 +51,11 @@ const run = computed(() => {
 })
 
 const canCancel = computed(() => isActive(run.value?.status) && !run.value?.cancel_requested)
+const logsRefetchInterval = computed(() => {
+  const status = run.value?.status
+  if (!status) return 2_000
+  return isActive(status) ? 2_000 : false
+})
 
 const logsQuery = useQuery({
   queryKey: computed(() => ['run-logs', runId.value]),
@@ -59,7 +64,7 @@ const logsQuery = useQuery({
     return response.logs
   },
   enabled: computed(() => Number.isFinite(runId.value) && runId.value > 0),
-  refetchInterval: () => (isActive(run.value?.status) ? 2_000 : false)
+  refetchInterval: logsRefetchInterval
 })
 
 const versionsQuery = useQuery({
@@ -70,6 +75,13 @@ const versionsQuery = useQuery({
 
 watch(() => runId.value, () => {
   logs.value = []; lastSeq.value = 0; statusOverride.value = null; cancelRequestedOverride.value = false; actionError.value = ''
+})
+
+watch(() => run.value?.status, (status, previousStatus) => {
+  if (!status || !previousStatus) return
+  if (!isActive(status) && isActive(previousStatus)) {
+    void logsQuery.refetch()
+  }
 })
 
 watch(() => logsQuery.data.value, async (entries) => {
