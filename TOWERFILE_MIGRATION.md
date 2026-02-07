@@ -358,16 +358,123 @@ Add examples showing the Towerfile-based deploy workflow.
 
 ---
 
-### Phase 7: Frontend Towerfile Display (Optional, Low Priority)
+### Phase 7: Frontend Changes
 
-Update the version detail view to show the Towerfile content when
-`towerfile_toml` is present on the version:
+The Vue.js frontend has four areas that need updates to support Towerfile-based
+packaging. These are **not optional**—the version upload form and run creation
+modal both handle fields that change with the Towerfile migration.
 
-- Add a "Towerfile" tab or section to the version detail page.
-- Render as a syntax-highlighted TOML block.
-- Show parsed parameters in a structured table.
+#### 7a. TypeScript types (`frontend/src/api/types.ts`)
 
-This is cosmetic and can be deferred.
+Update `VersionResponse` to include new server fields:
+
+```typescript
+export interface VersionResponse {
+  version_id: number
+  version_no: number
+  entrypoint: string
+  timeout_seconds?: number
+  params_schema?: Record<string, unknown>
+  artifact_sha256: string
+  created_at: string
+  // New fields from Phase 4d:
+  towerfile_toml?: string          // Raw Towerfile content
+  import_paths?: string[]          // PYTHONPATH additions
+}
+```
+
+Update `CreateVersionRequest` to support the artifact-only upload mode where
+the Towerfile inside the archive provides all metadata:
+
+```typescript
+export interface CreateVersionRequest {
+  artifact: File
+  entrypoint?: string              // Now optional (extracted from Towerfile)
+  timeout_seconds?: number
+  params_schema_json?: string
+}
+```
+
+#### 7b. Version upload form (`frontend/src/pages/AppDetailPage.vue`)
+
+The versions tab currently has a form with required `entrypoint`, optional
+`timeout_seconds`, optional `params_schema_json`, and required artifact file.
+
+**Changes:**
+
+1. Add a toggle or auto-detect: **"Artifact contains Towerfile"** checkbox
+   (or detect by inspecting the archive client-side).
+2. When enabled, hide the `entrypoint`, `timeout_seconds`, and
+   `params_schema_json` fields—the server extracts these from the Towerfile
+   inside the artifact (Phase 4a).
+3. When disabled (legacy mode), the form works exactly as before.
+4. After a successful upload, if the response contains `towerfile_toml`,
+   display a success message noting the Towerfile was detected.
+
+**API client change** (`frontend/src/api/client.ts`): In `createVersion()`,
+skip setting `entrypoint` in the `FormData` when in Towerfile mode so the
+server triggers the Towerfile extraction path.
+
+#### 7c. Version list display (`frontend/src/pages/AppDetailPage.vue`)
+
+Currently each version row shows: version number, entrypoint, SHA256, timestamp.
+
+**Changes:**
+
+1. Add a small "Towerfile" badge/icon next to versions that have
+   `towerfile_toml` set (indicates declarative packaging was used vs manual).
+2. Add an expandable detail section (or modal) on click that shows:
+   - Raw Towerfile content in a `<pre>` code block.
+   - Parsed `import_paths` list.
+   - Source patterns (parsed from the TOML).
+3. Show `import_paths` as chips/tags when present.
+
+#### 7d. Run creation parameter defaults (`frontend/src/components/apps/CreateRunModal.vue`)
+
+The `CreateRunModal` already parses `params_schema` into form fields with type
+awareness. However, it does **not** currently use `default` values from the
+JSON Schema to pre-populate fields.
+
+When `[[parameters]]` in the Towerfile specify `default` values, they get
+mapped to JSON Schema `"default"` fields (Phase 3). The modal needs to:
+
+1. Read `default` from each property in the schema.
+2. Pre-populate `formValues` with defaults when the version is selected.
+3. Show a visual indicator (e.g., italic placeholder text, "(default)" label)
+   for fields using their default value.
+4. Allow the user to clear or override defaults.
+
+**Code change in `CreateRunModal.vue`:**
+
+```typescript
+// In the schemaFields computed, extract default:
+return {
+  name,
+  kind: normalizeType(details.type),
+  required: requiredNames.has(name),
+  description: typeof details.description === 'string' ? details.description : undefined,
+  enumValues: enumValues && enumValues.length > 0 ? enumValues : undefined,
+  defaultValue: details.default,  // NEW: capture default from schema
+}
+
+// In the version selection watcher, seed formValues with defaults:
+watch(selectedVersionNo, () => {
+  formValues.value = {}
+  for (const field of schemaFields.value) {
+    if (field.defaultValue !== undefined) {
+      formValues.value[field.name] = field.defaultValue
+    }
+  }
+})
+```
+
+**Acceptance:**
+- Uploading a Towerfile-based artifact without explicit `entrypoint` succeeds
+  and the version shows a Towerfile badge.
+- Legacy upload (explicit entrypoint) still works unchanged.
+- Version detail shows raw Towerfile content when available.
+- Run creation form pre-populates parameter defaults from the schema.
+- `VersionResponse` type includes `towerfile_toml` and `import_paths`.
 
 ---
 
@@ -392,6 +499,10 @@ This is cosmetic and can be deferred.
 | `scripts/smoke.sh` | modify | Add Towerfile-based test case |
 | `scripts/curl-examples.md` | modify | Add Towerfile deploy examples |
 | `PLAN.md` | modify | Document Towerfile in domain model |
+| `frontend/src/api/types.ts` | modify | Add `towerfile_toml`, `import_paths` to `VersionResponse`; make `entrypoint` optional in `CreateVersionRequest` |
+| `frontend/src/api/client.ts` | modify | Support Towerfile-mode upload (omit `entrypoint` from FormData) |
+| `frontend/src/pages/AppDetailPage.vue` | modify | Towerfile toggle on upload form; Towerfile badge + detail on version rows |
+| `frontend/src/components/apps/CreateRunModal.vue` | modify | Pre-populate parameter defaults from JSON Schema `default` field |
 
 ---
 
@@ -412,6 +523,8 @@ exactly as before. The Towerfile path is a new, parallel code path.
    artifact-only upload and persists Towerfile metadata.
 4. Merge Phase 5 (runner import paths) — depends on Phase 4 header.
 5. Merge Phase 6 (tests/docs) — can be incremental throughout.
+6. Merge Phase 7 (frontend) — depends on Phase 4d API response changes. The
+   parameter defaults fix (7d) is independently mergeable at any time.
 
 ### Data migration
 
@@ -459,4 +572,7 @@ have `towerfile_toml = NULL`.
 - [ ] **Phase 4e:** Artifact download `X-Import-Paths` header
 - [ ] **Phase 5:** Runner `PYTHONPATH` setup from import paths
 - [ ] **Phase 6:** Smoke test, Dockerfile, documentation updates
-- [ ] **Phase 7:** Frontend Towerfile display (optional)
+- [ ] **Phase 7a:** Frontend TypeScript types (`VersionResponse`, `CreateVersionRequest`)
+- [ ] **Phase 7b:** Frontend version upload form (Towerfile toggle, conditional fields)
+- [ ] **Phase 7c:** Frontend version list display (Towerfile badge, detail expand)
+- [ ] **Phase 7d:** Frontend run creation parameter defaults from schema
