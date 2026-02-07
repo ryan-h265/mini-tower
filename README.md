@@ -66,9 +66,8 @@ Re-running bootstrap for the same slug is idempotent and can reset that team's p
 **3. Create a project with a Towerfile:**
 ```bash
 mkdir -p myapp && cat > myapp/main.py << 'PY'
-import os, json
-input_data = json.loads(os.environ.get("MINITOWER_INPUT", "{}"))
-print(f"Hello, {input_data.get('name', 'World')}!")
+import os
+print(f"Hello, {os.getenv('name', 'World')}!")
 PY
 
 cat > myapp/Towerfile << 'TOML'
@@ -300,7 +299,7 @@ curl -s localhost:8080/metrics | grep minitower_runs
 
 **Artifacts**: A version artifact is a `.tar.gz` containing your code and a `Towerfile` at its root. If `requirements.txt` is present, dependencies are installed into an isolated virtual environment before execution. Artifacts are SHA-256 verified on download.
 
-**Execution**: Runners create a fresh workspace for each run. Python (`.py`) entrypoints run in an isolated venv; shell (`.sh`) entrypoints run under `/bin/sh`. The entrypoint receives input via `MINITOWER_INPUT` environment variable as JSON.
+**Execution**: Runners create a fresh workspace for each run. Python (`.py`) entrypoints run in an isolated venv; shell (`.sh`) entrypoints run under `/bin/sh`. Each run input key is exposed to the entrypoint as an environment variable.
 
 **Leasing**: Runners acquire exclusive leases on runs. If a runner fails to heartbeat before lease expiry, the run is automatically retried (up to `max_retries`) or marked dead.
 

@@ -51,6 +51,65 @@ func TestTeamTokenScopingBlocksCrossTeamAccess(t *testing.T) {
 	_ = teamA
 }
 
+func TestRunnerRegistrationIsIdempotentByName(t *testing.T) {
+	handler, _, _, cleanup := newTestServer(t)
+	defer cleanup()
+
+	body := map[string]any{
+		"name":        "runner-restart",
+		"environment": "default",
+	}
+
+	firstResp := doRequest(t, handler, http.MethodPost, "/api/v1/runners/register", "test-runner-reg", "", body)
+	defer firstResp.Body.Close()
+	if firstResp.StatusCode != http.StatusCreated {
+		t.Fatalf("first registration status: %d", firstResp.StatusCode)
+	}
+
+	var firstPayload struct {
+		RunnerID int64  `json:"runner_id"`
+		Token    string `json:"token"`
+	}
+	if err := json.NewDecoder(firstResp.Body).Decode(&firstPayload); err != nil {
+		t.Fatalf("decode first registration: %v", err)
+	}
+	if firstPayload.Token == "" {
+		t.Fatalf("expected first token")
+	}
+
+	secondResp := doRequest(t, handler, http.MethodPost, "/api/v1/runners/register", "test-runner-reg", "", body)
+	defer secondResp.Body.Close()
+	if secondResp.StatusCode != http.StatusOK {
+		t.Fatalf("second registration status: %d", secondResp.StatusCode)
+	}
+
+	var secondPayload struct {
+		RunnerID int64  `json:"runner_id"`
+		Token    string `json:"token"`
+	}
+	if err := json.NewDecoder(secondResp.Body).Decode(&secondPayload); err != nil {
+		t.Fatalf("decode second registration: %v", err)
+	}
+	if secondPayload.RunnerID != firstPayload.RunnerID {
+		t.Fatalf("expected same runner ID, got first=%d second=%d", firstPayload.RunnerID, secondPayload.RunnerID)
+	}
+	if secondPayload.Token == "" || secondPayload.Token == firstPayload.Token {
+		t.Fatalf("expected token to be rotated on re-registration")
+	}
+
+	oldTokenResp := doRequest(t, handler, http.MethodPost, "/api/v1/runs/lease", firstPayload.Token, "", nil)
+	defer oldTokenResp.Body.Close()
+	if oldTokenResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("old token should be unauthorized, got %d", oldTokenResp.StatusCode)
+	}
+
+	newTokenResp := doRequest(t, handler, http.MethodPost, "/api/v1/runs/lease", secondPayload.Token, "", nil)
+	defer newTokenResp.Body.Close()
+	if newTokenResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("new token should be accepted, got %d", newTokenResp.StatusCode)
+	}
+}
+
 func TestRunnerEndpointsRejectStaleLeaseToken(t *testing.T) {
 	handler, s, _, cleanup := newTestServer(t)
 	defer cleanup()

@@ -74,6 +74,18 @@ func (s *Store) CreateRunner(ctx context.Context, name, environment, tokenHash s
 	}, nil
 }
 
+// RefreshRunnerRegistration re-issues a runner token and marks the runner online.
+func (s *Store) RefreshRunnerRegistration(ctx context.Context, runnerID int64, environment, tokenHash string) error {
+	now := time.Now().UnixMilli()
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE runners
+		 SET environment = ?, token_hash = ?, status = 'online', last_seen_at = ?, updated_at = ?
+		 WHERE id = ?`,
+		environment, tokenHash, now, now, runnerID,
+	)
+	return err
+}
+
 // GetRunnerByTokenHash finds a runner by token hash.
 func (s *Store) GetRunnerByTokenHash(ctx context.Context, tokenHash string) (*Runner, error) {
 	var r Runner

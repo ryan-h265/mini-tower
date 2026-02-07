@@ -71,15 +71,11 @@ mkdir -p /tmp/minitower-demo
 cat > /tmp/minitower-demo/main.py << 'PYTHON'
 #!/usr/bin/env python3
 import os
-import json
 import time
 
-# Get input from environment
-input_json = os.environ.get("MINITOWER_INPUT", "{}")
-input_data = json.loads(input_json)
-
-name = input_data.get("name", "World")
-count = input_data.get("count", 10)
+# Input parameters are exported as env vars by key.
+name = os.getenv("name", "World")
+count = int(os.getenv("count", "10"))
 
 print(f"Starting job for {name}...")
 

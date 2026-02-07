@@ -101,11 +101,8 @@ mkdir -p "$WORKDIR/project"
 cat > "$WORKDIR/project/main.py" << 'PYTHON'
 #!/usr/bin/env python3
 import os
-import json
 
-input_json = os.environ.get("MINITOWER_INPUT", "{}")
-input_data = json.loads(input_json)
-name = input_data.get("name", "World")
+name = os.getenv("name", "World")
 
 print(f"Hello, {name}!")
 print("Smoke test completed successfully")

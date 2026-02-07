@@ -91,10 +91,9 @@ TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
 cat > "${TMPDIR}/main.py" << 'PYTHON'
-import os, json, time, random
-input_data = json.loads(os.environ.get("MINITOWER_INPUT", "{}"))
+import os, time, random
 duration = random.uniform(2, 5)
-name = input_data.get("name", "World")
+name = os.getenv("name", "World")
 print(f"Hello, {name}! Sleeping {duration:.1f}s...")
 time.sleep(duration)
 print("Done.")

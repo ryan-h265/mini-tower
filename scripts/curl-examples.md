@@ -71,9 +71,8 @@ Create a project directory with a `Towerfile`:
 ```bash
 mkdir -p /tmp/myapp
 cat > /tmp/myapp/main.py << 'EOF'
-import os, json
-input_data = json.loads(os.environ.get("MINITOWER_INPUT", "{}"))
-print(f"Hello, {input_data.get('name', 'World')}!")
+import os
+print(f"Hello, {os.getenv('name', 'World')}!")
 EOF
 
 cat > /tmp/myapp/Towerfile << 'EOF'

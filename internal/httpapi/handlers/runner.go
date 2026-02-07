@@ -98,16 +98,26 @@ func (h *Handlers) RegisterRunner(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}
-	if existing != nil {
-		writeError(w, http.StatusConflict, "conflict", "runner already exists")
-		return
-	}
 
 	// Generate runner token
 	token, tokenHash, err := auth.GeneratePrefixedToken(auth.PrefixRunnerToken)
 	if err != nil {
 		h.logger.Error("generate runner token", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "internal error")
+		return
+	}
+
+	if existing != nil {
+		if err := h.store.RefreshRunnerRegistration(r.Context(), existing.ID, environment, tokenHash); err != nil {
+			h.logger.Error("refresh runner registration", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal", "internal error")
+			return
+		}
+		writeJSON(w, http.StatusOK, registerRunnerResponse{
+			RunnerID: existing.ID,
+			Name:     existing.Name,
+			Token:    token,
+		})
 		return
 	}
 

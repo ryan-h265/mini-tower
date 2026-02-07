@@ -221,7 +221,7 @@ func (r *Runner) register(ctx context.Context) error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusCreated {
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("register failed: %d %s", resp.StatusCode, string(respBody))
 	}
@@ -444,11 +444,7 @@ func (r *Runner) runProcess(ctx context.Context, runCtx context.Context, cancel 
 	}
 	cmd.Dir = ws.Dir
 
-	cmd.Env = os.Environ()
-	if lease.Input != nil {
-		inputJSON, _ := json.Marshal(lease.Input)
-		cmd.Env = append(cmd.Env, "MINITOWER_INPUT="+string(inputJSON))
-	}
+	cmd.Env = r.buildProcessEnv(os.Environ(), lease.Input)
 
 	// For Python entrypoints, prepend import paths to PYTHONPATH.
 	if strings.HasSuffix(lease.Entrypoint, ".py") && len(ws.ImportPaths) > 0 {
@@ -899,6 +895,75 @@ func (r *Runner) flushLogs(ctx context.Context, lease *LeaseResponse, logs []log
 		return fmt.Errorf("log flush failed: %d %s", resp.StatusCode, string(respBody))
 	}
 	return nil
+}
+
+func (r *Runner) buildProcessEnv(base []string, input map[string]any) []string {
+	env := append([]string(nil), base...)
+	env = unsetEnvVar(env, "MINITOWER_INPUT")
+	if input == nil {
+		return env
+	}
+
+	for key, value := range input {
+		if !validEnvKey(key) {
+			r.logger.Warn("skipping input key for env var export", "key", key)
+			continue
+		}
+		env = setEnvVar(env, key, inputValueToEnvString(value))
+	}
+	return env
+}
+
+func setEnvVar(env []string, key, value string) []string {
+	if key == "" {
+		return env
+	}
+	prefix := key + "="
+	filtered := env[:0]
+	for _, kv := range env {
+		if strings.HasPrefix(kv, prefix) {
+			continue
+		}
+		filtered = append(filtered, kv)
+	}
+	return append(filtered, prefix+value)
+}
+
+func unsetEnvVar(env []string, key string) []string {
+	if key == "" {
+		return env
+	}
+	prefix := key + "="
+	filtered := env[:0]
+	for _, kv := range env {
+		if strings.HasPrefix(kv, prefix) {
+			continue
+		}
+		filtered = append(filtered, kv)
+	}
+	return filtered
+}
+
+func validEnvKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	return !strings.ContainsRune(key, '=') && !strings.ContainsRune(key, 0)
+}
+
+func inputValueToEnvString(value any) string {
+	if value == nil {
+		return ""
+	}
+	if s, ok := value.(string); ok {
+		return s
+	}
+
+	data, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprint(value)
+	}
+	return string(data)
 }
 
 func (r *Runner) submitResult(ctx context.Context, lease *LeaseResponse, status string, exitCode *int, errorMessage *string) error {
