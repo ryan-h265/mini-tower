@@ -1,4 +1,5 @@
 import type {
+  AuthOptionsResponse,
   AppResponse,
   AdminRunnersResponse,
   BootstrapTeamRequest,
@@ -15,6 +16,8 @@ import type {
   LoginRequest,
   LoginResponse,
   MeResponse,
+  SignupTeamRequest,
+  SignupTeamResponse,
   RunLogsResponse,
   RunResponse,
   RunsSummaryResponse,
@@ -143,6 +146,20 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 }
 
 export const apiClient = {
+  getAuthOptions(): Promise<AuthOptionsResponse> {
+    return request<AuthOptionsResponse>('/api/v1/auth/options', {
+      auth: false
+    })
+  },
+
+  signupTeam(payload: SignupTeamRequest): Promise<SignupTeamResponse> {
+    return request<SignupTeamResponse>('/api/v1/teams/signup', {
+      method: 'POST',
+      body: payload,
+      auth: false
+    })
+  },
+
   loginTeam(payload: LoginRequest): Promise<LoginResponse> {
     return request<LoginResponse>('/api/v1/teams/login', {
       method: 'POST',

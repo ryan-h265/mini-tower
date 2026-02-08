@@ -13,6 +13,7 @@ const (
 	defaultListenAddr          = ":8080"
 	defaultDBPath              = "./minitower.db"
 	defaultObjectsDir          = "./objects"
+	defaultPublicSignupEnabled = true
 	defaultLeaseTTL            = 60 * time.Second
 	defaultExpiryCheckInterval = 10 * time.Second
 	defaultRunnerPruneAfter    = 24 * time.Hour
@@ -26,6 +27,7 @@ type Config struct {
 	DBPath                  string
 	ObjectsDir              string
 	BootstrapToken          string
+	PublicSignupEnabled     bool
 	RunnerRegistrationToken string
 	CORSOrigins             []string
 	LeaseTTL                time.Duration
@@ -41,6 +43,7 @@ func Load() (Config, error) {
 		ListenAddr:          defaultListenAddr,
 		DBPath:              defaultDBPath,
 		ObjectsDir:          defaultObjectsDir,
+		PublicSignupEnabled: defaultPublicSignupEnabled,
 		LeaseTTL:            defaultLeaseTTL,
 		ExpiryCheckInterval: defaultExpiryCheckInterval,
 		RunnerPruneAfter:    defaultRunnerPruneAfter,
@@ -59,6 +62,13 @@ func Load() (Config, error) {
 	}
 	if v := strings.TrimSpace(os.Getenv("MINITOWER_BOOTSTRAP_TOKEN")); v != "" {
 		cfg.BootstrapToken = v
+	}
+	if v := strings.TrimSpace(os.Getenv("MINITOWER_PUBLIC_SIGNUP_ENABLED")); v != "" {
+		enabled, err := strconv.ParseBool(v)
+		if err != nil {
+			return cfg, fmt.Errorf("invalid MINITOWER_PUBLIC_SIGNUP_ENABLED: %w", err)
+		}
+		cfg.PublicSignupEnabled = enabled
 	}
 	if v := strings.TrimSpace(os.Getenv("MINITOWER_LEASE_TTL")); v != "" {
 		dur, err := time.ParseDuration(v)
@@ -111,11 +121,11 @@ func Load() (Config, error) {
 		}
 	}
 
-	if cfg.BootstrapToken == "" {
-		return cfg, errors.New("MINITOWER_BOOTSTRAP_TOKEN is required")
-	}
 	if cfg.RunnerRegistrationToken == "" {
 		return cfg, errors.New("MINITOWER_RUNNER_REGISTRATION_TOKEN is required")
+	}
+	if !cfg.PublicSignupEnabled && cfg.BootstrapToken == "" {
+		return cfg, errors.New("MINITOWER_BOOTSTRAP_TOKEN is required when MINITOWER_PUBLIC_SIGNUP_ENABLED is false")
 	}
 
 	return cfg, nil

@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { apiClient, clearStoredToken, TOKEN_STORAGE_KEY } from '../api/client'
-import type { BootstrapTeamRequest, TokenRole } from '../api/types'
+import type { BootstrapTeamRequest, SignupTeamRequest, TokenRole } from '../api/types'
 
 export const useAuthStore = defineStore('auth', () => {
   const token = ref<string | null>(localStorage.getItem(TOKEN_STORAGE_KEY))
@@ -36,6 +36,21 @@ export const useAuthStore = defineStore('auth', () => {
     tokenId.value = response.token_id
     role.value = response.role
     teamId.value = response.team_id
+
+    try {
+      await fetchMe()
+    } catch (error) {
+      logout()
+      throw error
+    }
+  }
+
+  async function signup(payload: SignupTeamRequest): Promise<void> {
+    const response = await apiClient.signupTeam(payload)
+    setToken(response.token)
+    role.value = response.role
+    teamId.value = response.team_id
+    teamSlug.value = response.slug
 
     try {
       await fetchMe()
@@ -88,6 +103,7 @@ export const useAuthStore = defineStore('auth', () => {
     role,
     isAuthenticated,
     isAdmin,
+    signup,
     login,
     bootstrap,
     fetchMe,

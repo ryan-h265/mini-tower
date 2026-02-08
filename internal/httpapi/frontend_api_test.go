@@ -55,6 +55,110 @@ func TestGetMeReturnsRoleAndIdentity(t *testing.T) {
 	}
 }
 
+func TestSignupTeamCreatesTeamAndAllowsMultipleSlugs(t *testing.T) {
+	handler, _, _, cleanup := newTestServer(t)
+	defer cleanup()
+
+	firstResp := doRequest(t, handler, http.MethodPost, "/api/v1/teams/signup", "", "", map[string]any{
+		"slug":     "acme",
+		"name":     "Acme Corp",
+		"password": "acme-secret",
+	})
+	defer firstResp.Body.Close()
+	if firstResp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 for first signup, got %d", firstResp.StatusCode)
+	}
+	var firstPayload struct {
+		TeamID int64  `json:"team_id"`
+		Slug   string `json:"slug"`
+		Token  string `json:"token"`
+		Role   string `json:"role"`
+	}
+	if err := json.NewDecoder(firstResp.Body).Decode(&firstPayload); err != nil {
+		t.Fatalf("decode first signup response: %v", err)
+	}
+	if firstPayload.TeamID == 0 || firstPayload.Token == "" || firstPayload.Slug != "acme" || firstPayload.Role != "admin" {
+		t.Fatalf("unexpected first signup payload: %+v", firstPayload)
+	}
+
+	secondResp := doRequest(t, handler, http.MethodPost, "/api/v1/teams/signup", "", "", map[string]any{
+		"slug":     "beta",
+		"name":     "Beta Labs",
+		"password": "beta-secret",
+	})
+	defer secondResp.Body.Close()
+	if secondResp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 for second signup, got %d", secondResp.StatusCode)
+	}
+	var secondPayload struct {
+		TeamID int64  `json:"team_id"`
+		Slug   string `json:"slug"`
+		Token  string `json:"token"`
+		Role   string `json:"role"`
+	}
+	if err := json.NewDecoder(secondResp.Body).Decode(&secondPayload); err != nil {
+		t.Fatalf("decode second signup response: %v", err)
+	}
+	if secondPayload.TeamID == 0 || secondPayload.Token == "" || secondPayload.Slug != "beta" || secondPayload.Role != "admin" {
+		t.Fatalf("unexpected second signup payload: %+v", secondPayload)
+	}
+	if firstPayload.TeamID == secondPayload.TeamID {
+		t.Fatalf("expected different teams for different slugs, got shared ID %d", firstPayload.TeamID)
+	}
+}
+
+func TestSignupTeamRejectsDuplicateSlug(t *testing.T) {
+	handler, _, _, cleanup := newTestServer(t)
+	defer cleanup()
+
+	firstResp := doRequest(t, handler, http.MethodPost, "/api/v1/teams/signup", "", "", map[string]any{
+		"slug":     "acme",
+		"name":     "Acme Corp",
+		"password": "secret",
+	})
+	defer firstResp.Body.Close()
+	if firstResp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 for first signup, got %d", firstResp.StatusCode)
+	}
+
+	secondResp := doRequest(t, handler, http.MethodPost, "/api/v1/teams/signup", "", "", map[string]any{
+		"slug":     "acme",
+		"name":     "Acme Duplicate",
+		"password": "other",
+	})
+	defer secondResp.Body.Close()
+	if secondResp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 for duplicate signup slug, got %d", secondResp.StatusCode)
+	}
+
+	var errPayload struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(secondResp.Body).Decode(&errPayload); err != nil {
+		t.Fatalf("decode duplicate signup error: %v", err)
+	}
+	if errPayload.Error.Code != "slug_taken" {
+		t.Fatalf("expected slug_taken error code, got %q", errPayload.Error.Code)
+	}
+}
+
+func TestSignupTeamDisabledReturnsForbidden(t *testing.T) {
+	handler, _, _, cleanup := newTestServerWithAuthConfig(t, false, "test")
+	defer cleanup()
+
+	resp := doRequest(t, handler, http.MethodPost, "/api/v1/teams/signup", "", "", map[string]any{
+		"slug":     "acme",
+		"name":     "Acme Corp",
+		"password": "secret",
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 when signup is disabled, got %d", resp.StatusCode)
+	}
+}
+
 func TestCreateTokenRoleAssignment(t *testing.T) {
 	handler, s, _, cleanup := newTestServer(t)
 	defer cleanup()
@@ -212,6 +316,56 @@ func TestBootstrapTeamRejectsDifferentSlugWhenTeamAlreadyExists(t *testing.T) {
 	}
 	if errPayload.Error.Code != "team_exists" {
 		t.Fatalf("expected team_exists error code, got %q", errPayload.Error.Code)
+	}
+}
+
+func TestAuthOptionsReflectServerConfig(t *testing.T) {
+	enabledHandler, _, _, enabledCleanup := newTestServerWithAuthConfig(t, true, "test")
+	defer enabledCleanup()
+
+	enabledResp := doRequest(t, enabledHandler, http.MethodGet, "/api/v1/auth/options", "", "", nil)
+	defer enabledResp.Body.Close()
+	if enabledResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for auth options with bootstrap token, got %d", enabledResp.StatusCode)
+	}
+	var enabledPayload struct {
+		SignupEnabled    bool `json:"signup_enabled"`
+		BootstrapEnabled bool `json:"bootstrap_enabled"`
+	}
+	if err := json.NewDecoder(enabledResp.Body).Decode(&enabledPayload); err != nil {
+		t.Fatalf("decode enabled auth options response: %v", err)
+	}
+	if !enabledPayload.SignupEnabled || !enabledPayload.BootstrapEnabled {
+		t.Fatalf("unexpected enabled auth options payload: %+v", enabledPayload)
+	}
+
+	disabledBootstrapHandler, _, _, disabledBootstrapCleanup := newTestServerWithAuthConfig(t, true, "")
+	defer disabledBootstrapCleanup()
+
+	disabledBootstrapResp := doRequest(t, disabledBootstrapHandler, http.MethodGet, "/api/v1/auth/options", "", "", nil)
+	defer disabledBootstrapResp.Body.Close()
+	if disabledBootstrapResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for auth options without bootstrap token, got %d", disabledBootstrapResp.StatusCode)
+	}
+	var disabledBootstrapPayload struct {
+		SignupEnabled    bool `json:"signup_enabled"`
+		BootstrapEnabled bool `json:"bootstrap_enabled"`
+	}
+	if err := json.NewDecoder(disabledBootstrapResp.Body).Decode(&disabledBootstrapPayload); err != nil {
+		t.Fatalf("decode disabled-bootstrap auth options response: %v", err)
+	}
+	if !disabledBootstrapPayload.SignupEnabled || disabledBootstrapPayload.BootstrapEnabled {
+		t.Fatalf("unexpected disabled-bootstrap auth options payload: %+v", disabledBootstrapPayload)
+	}
+
+	bootstrapResp := doRequest(t, disabledBootstrapHandler, http.MethodPost, "/api/v1/bootstrap/team", "test", "", map[string]any{
+		"slug":     "no-bootstrap",
+		"name":     "No Bootstrap",
+		"password": "secret",
+	})
+	defer bootstrapResp.Body.Close()
+	if bootstrapResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 when bootstrap route is disabled, got %d", bootstrapResp.StatusCode)
 	}
 }
 
@@ -443,6 +597,14 @@ func TestCORSAllowlistPreflightAndOriginReflection(t *testing.T) {
 }
 
 func newTestServerWithCORS(t *testing.T, corsOrigins []string) (http.Handler, *store.Store, *sql.DB, func()) {
+	return newTestServerWithOptions(t, corsOrigins, true, "test")
+}
+
+func newTestServerWithAuthConfig(t *testing.T, signupEnabled bool, bootstrapToken string) (http.Handler, *store.Store, *sql.DB, func()) {
+	return newTestServerWithOptions(t, nil, signupEnabled, bootstrapToken)
+}
+
+func newTestServerWithOptions(t *testing.T, corsOrigins []string, signupEnabled bool, bootstrapToken string) (http.Handler, *store.Store, *sql.DB, func()) {
 	t.Helper()
 
 	s, dbConn, cleanup := testutil.NewTestDB(t)
@@ -456,7 +618,8 @@ func newTestServerWithCORS(t *testing.T, corsOrigins []string) (http.Handler, *s
 		ListenAddr:              ":0",
 		DBPath:                  "",
 		ObjectsDir:              "",
-		BootstrapToken:          "test",
+		BootstrapToken:          bootstrapToken,
+		PublicSignupEnabled:     signupEnabled,
 		RunnerRegistrationToken: "test-runner-reg",
 		CORSOrigins:             corsOrigins,
 		LeaseTTL:                60 * time.Second,

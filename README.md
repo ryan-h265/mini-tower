@@ -47,20 +47,31 @@ The control plane manages state and stores artifacts. A `Towerfile` (TOML) in ea
 
 **1. Start the control plane:**
 ```bash
-export MINITOWER_BOOTSTRAP_TOKEN=dev
 export MINITOWER_RUNNER_REGISTRATION_TOKEN=runner-secret
 go run ./cmd/minitowerd
 ```
 
-**2. Bootstrap a team:**
+**2. Sign up a team:**
 ```bash
+curl -sS -X POST http://localhost:8080/api/v1/teams/signup \
+  -H "Content-Type: application/json" \
+  -d '{"slug":"acme","name":"Acme Corp","password":"secret"}'
+```
+
+Save the `token` from the response.
+
+Optional operator bootstrap mode:
+```bash
+export MINITOWER_BOOTSTRAP_TOKEN=dev
+export MINITOWER_RUNNER_REGISTRATION_TOKEN=runner-secret
+# restart minitowerd after setting the bootstrap token
+go run ./cmd/minitowerd
+
 curl -sS -X POST http://localhost:8080/api/v1/bootstrap/team \
   -H "Authorization: Bearer dev" \
   -H "Content-Type: application/json" \
   -d '{"slug":"acme","name":"Acme Corp","password":"secret"}'
 ```
-
-Save the `token` from the response. The optional `password` field enables the team login endpoint.
 Re-running bootstrap for the same slug is idempotent and can reset that team's password in local/dev flows.
 
 **3. Create a project with a Towerfile:**
@@ -137,7 +148,8 @@ Open http://localhost:5173. In development, Vite proxies `/api` to `http://local
 | `MINITOWER_LISTEN_ADDR` | `:8080` | HTTP listen address |
 | `MINITOWER_DB_PATH` | `./minitower.db` | SQLite database path |
 | `MINITOWER_OBJECTS_DIR` | `./objects` | Artifact storage directory |
-| `MINITOWER_BOOTSTRAP_TOKEN` | — | Token for team bootstrap (required) |
+| `MINITOWER_PUBLIC_SIGNUP_ENABLED` | `true` | Enable unauthenticated team signup (`POST /api/v1/teams/signup`) |
+| `MINITOWER_BOOTSTRAP_TOKEN` | — | Optional operator token for bootstrap/recovery (`POST /api/v1/bootstrap/team`) |
 | `MINITOWER_RUNNER_REGISTRATION_TOKEN` | — | Token for runner registration (required) |
 | `MINITOWER_CORS_ORIGINS` | — | Comma-separated CORS allowlist (for separate frontend origin deployments) |
 | `MINITOWER_LEASE_TTL` | `60s` | Runner lease duration |
@@ -192,8 +204,10 @@ npm --prefix frontend run build
 - `GET /metrics` — Prometheus metrics
 
 ### Team Management
-- `POST /api/v1/bootstrap/team` — Create team, or re-bootstrap the same slug (bootstrap token)
+- `GET /api/v1/auth/options` — Public auth feature flags (`signup_enabled`, `bootstrap_enabled`)
+- `POST /api/v1/teams/signup` — Create a team (`slug`, `name`, `password`) and return an admin token
 - `POST /api/v1/teams/login` — Authenticate with slug + password, returns token + role
+- `POST /api/v1/bootstrap/team` — Operator bootstrap/recovery API only (not exposed in frontend UI; route exists only when bootstrap token is configured)
 - `GET /api/v1/me` — Resolve team identity + token role
 - `POST /api/v1/tokens` — Create additional API tokens (admin/member role assignment for admins)
 

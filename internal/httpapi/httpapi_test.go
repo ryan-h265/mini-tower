@@ -467,6 +467,7 @@ func newTestServer(t *testing.T) (http.Handler, *store.Store, *sql.DB, func()) {
 		DBPath:                  "",
 		ObjectsDir:              "",
 		BootstrapToken:          "test",
+		PublicSignupEnabled:     true,
 		RunnerRegistrationToken: "test-runner-reg",
 		LeaseTTL:                60 * time.Second,
 		ExpiryCheckInterval:     10 * time.Second,

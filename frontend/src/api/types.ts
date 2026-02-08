@@ -29,6 +29,24 @@ export interface LoginResponse {
   role: TokenRole
 }
 
+export interface SignupTeamRequest {
+  slug: string
+  name: string
+  password: string
+}
+
+export interface SignupTeamResponse {
+  team_id: number
+  slug: string
+  token: string
+  role: TokenRole
+}
+
+export interface AuthOptionsResponse {
+  signup_enabled: boolean
+  bootstrap_enabled: boolean
+}
+
 export interface BootstrapTeamRequest {
   slug: string
   name: string

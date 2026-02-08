@@ -31,7 +31,7 @@ MVP target: deploy a version, trigger runs, stream logs, support retries/cancel,
 
 ### In Scope (MVP)
 
-- Single bootstrap team (no public team management API).
+- Public team signup with optional operator bootstrap/recovery.
 - Single required environment: `default` (stored in DB, no environment CRUD API yet).
 - App CRUD (minimal), version creation from packaged source artifact, run trigger/list/get/cancel, run logs.
 - Run trigger accepts optional JSON params validated against the selected version schema.
@@ -81,7 +81,7 @@ Deferred features are **intentionally excluded** to minimize the failure surface
 
 ## 4. Domain Model (MVP)
 
-1. `Team`: tenant boundary (bootstrap-created once).
+1. `Team`: tenant boundary (signup-created or bootstrap-created).
 2. `Environment`: one row per team for `default`.
 3. `App`: logical workload identity.
 4. `AppVersion`: immutable packaged artifact spec (`artifact_object_key`, `artifact_sha256`, `entrypoint`, `timeout_seconds`, optional params schema, `towerfile_toml`, `import_paths_json`). Metadata is extracted from a `Towerfile` inside the artifact at upload time.
@@ -209,15 +209,19 @@ SQLite is intentionally used to surface concurrency and transactional edge cases
 
 Authentication model:
 
-- `POST /api/v1/bootstrap/team` uses bootstrap token.
+- `GET /api/v1/auth/options` and `POST /api/v1/teams/signup` are public.
+- `POST /api/v1/bootstrap/team` uses bootstrap token (optional operator flow).
 - Control-plane app/version/run/token endpoints use team API tokens.
 - Runner endpoints use runner token (issued at registration).
 - Runner attempt-scoped endpoints (`start`, `heartbeat`, `logs`, `result`, `artifact`) require both runner token and current lease token.
 
-### Bootstrap/Admin
+### Team/Auth/Admin
 
-1. `POST /api/v1/bootstrap/team`
-2. `POST /api/v1/tokens`
+1. `GET /api/v1/auth/options`
+2. `POST /api/v1/teams/signup`
+3. `POST /api/v1/teams/login`
+4. `POST /api/v1/bootstrap/team` (optional)
+5. `POST /api/v1/tokens`
 
 ### Apps and Versions
 
@@ -355,7 +359,7 @@ Acceptance:
 - Server boots, migrations apply.
 
 ### Phase 2: Core Domain
-- Team bootstrap, default environment seed, app/version/run schema + store.
+- Team signup/bootstrap, default environment seed, app/version/run schema + store.
 - Add artifact persistence layer (local filesystem object store).
 
 Acceptance:
@@ -409,7 +413,8 @@ Acceptance:
 - `MINITOWER_LISTEN_ADDR` (default `:8080`)
 - `MINITOWER_DB_PATH` (default `./minitower.db`)
 - `MINITOWER_OBJECTS_DIR` (default `./objects`)
-- `MINITOWER_BOOTSTRAP_TOKEN` (required)
+- `MINITOWER_PUBLIC_SIGNUP_ENABLED` (default `true`)
+- `MINITOWER_BOOTSTRAP_TOKEN` (optional; required only when public signup is disabled)
 - `MINITOWER_RUNNER_REGISTRATION_TOKEN` (required)
 - `MINITOWER_LEASE_TTL` (default `60s`)
 - `MINITOWER_EXPIRY_CHECK_INTERVAL` (default `10s`)
@@ -425,12 +430,12 @@ Acceptance:
 - `MINITOWER_DATA_DIR` (default `~/.minitower`)
 
 ## 13. Definition of Done
-1. Bootstrap team + default environment works.
+1. Team signup + default environment works.
 2. App/version/run endpoints work with team tokens.
 3. Runner executes real runs end-to-end with logs.
 4. Retry/dead and cancel flows are deterministic.
 5. Required tests pass with race detector.
-6. Smoke flow works: bootstrap -> token -> app -> upload version artifact -> run -> logs -> completion.
+6. Smoke flow works: signup -> token -> app -> upload version artifact -> run -> logs -> completion.
 
 ## 14. Post-MVP Backlog (Next)
 

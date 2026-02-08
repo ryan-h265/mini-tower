@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { apiClient } from '../api/client'
 import { useAuthStore } from '../stores/auth'
 
 const route = useRoute()
@@ -10,17 +11,28 @@ const auth = useAuthStore()
 const loginSlug = ref('')
 const loginPassword = ref('')
 
-const bootstrapToken = ref('')
-const bootstrapSlug = ref('')
-const bootstrapName = ref('')
-const bootstrapPassword = ref('')
+const signupSlug = ref('')
+const signupName = ref('')
+const signupPassword = ref('')
+const signupConfirmPassword = ref('')
 
 const busy = ref(false)
 const errorMessage = ref('')
+const signupEnabled = ref(true)
 
 const redirectPath = computed(() => {
   const raw = route.query.redirect
   return typeof raw === 'string' && raw.startsWith('/') ? raw : '/home'
+})
+
+onMounted(async () => {
+  try {
+    const options = await apiClient.getAuthOptions()
+    signupEnabled.value = options.signup_enabled
+  } catch {
+    // Backward-compatible fallback for older API servers.
+    signupEnabled.value = true
+  }
 })
 
 async function submitLogin(): Promise<void> {
@@ -36,21 +48,23 @@ async function submitLogin(): Promise<void> {
   }
 }
 
-async function submitBootstrap(): Promise<void> {
+async function submitSignup(): Promise<void> {
+  if (signupPassword.value !== signupConfirmPassword.value) {
+    errorMessage.value = 'Passwords do not match'
+    return
+  }
+
   busy.value = true
   errorMessage.value = ''
   try {
-    await auth.bootstrap(
-      {
-        slug: bootstrapSlug.value,
-        name: bootstrapName.value,
-        password: bootstrapPassword.value || undefined
-      },
-      bootstrapToken.value
-    )
-    await router.replace('/home')
+    await auth.signup({
+      slug: signupSlug.value,
+      name: signupName.value,
+      password: signupPassword.value
+    })
+    await router.replace(redirectPath.value)
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : 'Bootstrap failed'
+    errorMessage.value = error instanceof Error ? error.message : 'Signup failed'
   } finally {
     busy.value = false
   }
@@ -75,7 +89,7 @@ async function submitBootstrap(): Promise<void> {
             <polyline points="2 12 12 17 22 12" />
           </svg>
         </div>
-        <h1>Tower</h1>
+        <h1>MiniTower</h1>
         <p>Run orchestration platform</p>
       </div>
 
@@ -103,31 +117,36 @@ async function submitBootstrap(): Promise<void> {
         </form>
       </section>
 
-      <!-- Bootstrap -->
-      <section class="auth-card bootstrap">
-        <h2>Bootstrap Team</h2>
-        <p class="hint">First-time setup with a bootstrap token.</p>
-        <form class="form" @submit.prevent="submitBootstrap">
-          <label class="field">
-            <span>Bootstrap token</span>
-            <input v-model="bootstrapToken" placeholder="tok_..." required />
-          </label>
+      <!-- Public Signup -->
+      <section v-if="signupEnabled" class="auth-card signup">
+        <h2>Create Team</h2>
+        <p class="hint">Create a new team workspace with an admin account.</p>
+        <form class="form" @submit.prevent="submitSignup">
           <label class="field">
             <span>Team slug</span>
-            <input v-model.trim="bootstrapSlug" placeholder="my-team" required />
+            <input v-model.trim="signupSlug" placeholder="my-team" required />
           </label>
           <label class="field">
             <span>Team name</span>
-            <input v-model.trim="bootstrapName" placeholder="My Team" required />
+            <input v-model.trim="signupName" placeholder="My Team" required />
           </label>
           <label class="field">
-            <span>Password <span class="optional">(optional)</span></span>
-            <input v-model="bootstrapPassword" type="password" placeholder="Choose a password" />
+            <span>Password</span>
+            <input v-model="signupPassword" type="password" placeholder="Choose a password" required />
+          </label>
+          <label class="field">
+            <span>Confirm password</span>
+            <input v-model="signupConfirmPassword" type="password" placeholder="Repeat password" required />
           </label>
           <button :disabled="busy" type="submit" class="submit-btn secondary">
-            {{ busy ? 'Setting up...' : 'Bootstrap Team' }}
+            {{ busy ? 'Creating team...' : 'Create Team' }}
           </button>
         </form>
+      </section>
+
+      <section v-else class="auth-card signup">
+        <h2>Team Signup Disabled</h2>
+        <p class="hint">Ask your operator to provide credentials or enable public signup.</p>
       </section>
     </div>
   </div>
@@ -293,11 +312,6 @@ async function submitBootstrap(): Promise<void> {
   color: var(--text-secondary);
   font-size: 0.8rem;
   font-weight: 500;
-}
-
-.optional {
-  color: var(--text-tertiary);
-  font-weight: 400;
 }
 
 input {

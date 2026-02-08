@@ -33,6 +33,29 @@ describe('auth store', () => {
     expect(localStorage.getItem(TOKEN_STORAGE_KEY)).toBe('team-token')
   })
 
+  it('signs up and hydrates identity via /me', async () => {
+    vi.spyOn(apiClient, 'signupTeam').mockResolvedValue({
+      team_id: 12,
+      slug: 'new-team',
+      token: 'signup-token',
+      role: 'admin'
+    })
+    vi.spyOn(apiClient, 'getMe').mockResolvedValue({
+      team_id: 12,
+      team_slug: 'new-team',
+      token_id: 301,
+      role: 'admin'
+    })
+
+    const store = useAuthStore()
+    await store.signup({ slug: 'new-team', name: 'New Team', password: 'secret' })
+
+    expect(store.isAuthenticated).toBe(true)
+    expect(store.isAdmin).toBe(true)
+    expect(store.teamSlug).toBe('new-team')
+    expect(localStorage.getItem(TOKEN_STORAGE_KEY)).toBe('signup-token')
+  })
+
   it('rolls back auth state when /me fails after login', async () => {
     vi.spyOn(apiClient, 'loginTeam').mockResolvedValue({
       team_id: 9,
@@ -44,6 +67,23 @@ describe('auth store', () => {
 
     const store = useAuthStore()
     await expect(store.login('broken', 'secret')).rejects.toThrow('unauthorized')
+
+    expect(store.isAuthenticated).toBe(false)
+    expect(store.token).toBeNull()
+    expect(localStorage.getItem(TOKEN_STORAGE_KEY)).toBeNull()
+  })
+
+  it('rolls back auth state when /me fails after signup', async () => {
+    vi.spyOn(apiClient, 'signupTeam').mockResolvedValue({
+      team_id: 20,
+      slug: 'broken-team',
+      token: 'temp-signup-token',
+      role: 'admin'
+    })
+    vi.spyOn(apiClient, 'getMe').mockRejectedValue(new Error('unauthorized'))
+
+    const store = useAuthStore()
+    await expect(store.signup({ slug: 'broken-team', name: 'Broken Team', password: 'secret' })).rejects.toThrow('unauthorized')
 
     expect(store.isAuthenticated).toBe(false)
     expect(store.token).toBeNull()

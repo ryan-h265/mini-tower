@@ -183,13 +183,13 @@ Admin:
 
 App bootstrapping and auth state:
 - `frontend/src/main.ts`: creates app, pinia, vue-query, auth rehydrate, unauthorized handler.
-- `frontend/src/stores/auth.ts`: login/bootstrap/fetchMe/logout/rehydrate state machine.
+- `frontend/src/stores/auth.ts`: signup/login/bootstrap/fetchMe/logout/rehydrate state machine.
 - `frontend/src/router/index.ts`: auth + admin route guards.
 
 Pages and their backend actions:
 - `frontend/src/pages/LoginPage.vue`
+- signup form -> `apiClient.signupTeam`
 - login form -> `apiClient.loginTeam`
-- bootstrap form -> `apiClient.bootstrapTeam`
 - `frontend/src/pages/HomePage.vue`
 - dashboard cards -> `listApps`, `getRunsSummary`, `listRunsByTeam`
 - `frontend/src/pages/AppsPage.vue`

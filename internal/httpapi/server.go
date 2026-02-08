@@ -92,10 +92,16 @@ func (s *Server) routes() {
 	// Metrics (no auth)
 	s.mux.Handle("/metrics", s.metrics.Handler())
 
-	// Bootstrap (bootstrap token auth)
-	s.mux.Handle("/api/v1/bootstrap/team", s.auth.RequireBootstrap(http.HandlerFunc(s.handlers.BootstrapTeam)))
+	// Public auth options
+	s.mux.HandleFunc("/api/v1/auth/options", s.handlers.GetAuthOptions)
 
-	// Team login (no auth)
+	// Bootstrap (bootstrap token auth) - enabled only when token is configured.
+	if strings.TrimSpace(s.cfg.BootstrapToken) != "" {
+		s.mux.Handle("/api/v1/bootstrap/team", s.auth.RequireBootstrap(http.HandlerFunc(s.handlers.BootstrapTeam)))
+	}
+
+	// Team auth endpoints (no auth)
+	s.mux.HandleFunc("/api/v1/teams/signup", s.handlers.SignupTeam)
 	s.mux.HandleFunc("/api/v1/teams/login", s.handlers.LoginTeam)
 
 	// Runner registration (platform runner registration token auth)

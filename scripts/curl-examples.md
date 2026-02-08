@@ -10,18 +10,16 @@ go build -o bin/minitowerd ./cmd/minitowerd
 go build -o bin/minitower-runner ./cmd/minitower-runner
 
 # Run server (in one terminal)
-MINITOWER_BOOTSTRAP_TOKEN=secret \
 MINITOWER_RUNNER_REGISTRATION_TOKEN=runner-secret \
 ./bin/minitowerd
 ```
 
-### 2. Bootstrap Team
+### 2. Sign Up Team
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/bootstrap/team \
-  -H "Authorization: Bearer secret" \
+curl -s -X POST http://localhost:8080/api/v1/teams/signup \
   -H "Content-Type: application/json" \
-  -d '{"slug":"myteam","name":"My Team"}'
+  -d '{"slug":"myteam","name":"My Team","password":"secret"}'
 ```
 
 Response:
@@ -29,13 +27,25 @@ Response:
 {
   "team_id": 1,
   "slug": "myteam",
-  "token": "mtk_..."
+  "token": "tt_..."
 }
 ```
 
 Save the token:
 ```bash
-export TOKEN="mtk_..."           # Team API token
+export TOKEN="tt_..."           # Team API token
+```
+
+Optional operator bootstrap flow:
+```bash
+MINITOWER_BOOTSTRAP_TOKEN=secret \
+MINITOWER_RUNNER_REGISTRATION_TOKEN=runner-secret \
+./bin/minitowerd
+
+curl -s -X POST http://localhost:8080/api/v1/bootstrap/team \
+  -H "Authorization: Bearer secret" \
+  -H "Content-Type: application/json" \
+  -d '{"slug":"myteam","name":"My Team","password":"secret"}'
 ```
 
 ## App Management
@@ -227,7 +237,8 @@ curl -s http://localhost:8080/ready
 | `MINITOWER_LISTEN_ADDR` | `:8080` | Listen address |
 | `MINITOWER_DB_PATH` | `./minitower.db` | SQLite database path |
 | `MINITOWER_OBJECTS_DIR` | `./objects` | Artifact storage directory |
-| `MINITOWER_BOOTSTRAP_TOKEN` | Required | Bootstrap token |
+| `MINITOWER_PUBLIC_SIGNUP_ENABLED` | `true` | Enable public team signup |
+| `MINITOWER_BOOTSTRAP_TOKEN` | Optional | Operator bootstrap token |
 | `MINITOWER_RUNNER_REGISTRATION_TOKEN` | Required | Runner registration token |
 | `MINITOWER_LEASE_TTL` | `60s` | Lease duration |
 | `MINITOWER_EXPIRY_CHECK_INTERVAL` | `10s` | Expiry check interval |
