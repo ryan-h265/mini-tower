@@ -176,9 +176,15 @@ onMounted(() => {
           <div class="donut-wrap">
             <svg viewBox="0 0 100 100" class="donut">
               <circle cx="50" cy="50" r="42" fill="none" stroke="var(--border-default)" stroke-width="8"/>
-              <circle cx="50" cy="50" r="42" fill="none" stroke="var(--accent-green)" stroke-width="8"
+              <circle cx="50" cy="50" r="42" fill="none" stroke="url(#donut-grad)" stroke-width="8"
                 :stroke-dasharray="donutDasharray" stroke-dashoffset="0"
-                transform="rotate(-90 50 50)" stroke-linecap="round"/>
+                transform="rotate(-90 50 50)" stroke-linecap="round" class="donut-arc"/>
+              <defs>
+                <linearGradient id="donut-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="var(--accent-green)"/>
+                  <stop offset="100%" stop-color="var(--accent-cyan)"/>
+                </linearGradient>
+              </defs>
             </svg>
             <div class="donut-label">
               <span class="donut-pct">{{ donutPercent }}%</span>
@@ -276,13 +282,11 @@ onMounted(() => {
   display: grid;
   gap: 1.25rem;
   opacity: 0;
-  transform: translateY(6px);
-  transition: opacity 400ms ease, transform 400ms ease;
+  transform: translateY(8px);
 }
 
 .home.visible {
-  opacity: 1;
-  transform: translateY(0);
+  animation: fadeInUp 500ms ease forwards;
 }
 
 /* Page header */
@@ -296,10 +300,11 @@ onMounted(() => {
   width: 44px;
   height: 44px;
   border-radius: var(--radius-md);
-  background: var(--bg-tertiary);
+  background: color-mix(in srgb, var(--accent-blue) 10%, var(--bg-tertiary));
   display: grid;
   place-items: center;
   color: var(--accent-blue);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--accent-blue) 8%, transparent);
 }
 
 .subtitle {
@@ -320,9 +325,16 @@ onMounted(() => {
   align-items: center;
   gap: 0.65rem;
   padding: 0.85rem 1rem;
-  background: var(--bg-secondary);
+  background: var(--gradient-surface);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-lg);
+  transition: border-color var(--transition-base), box-shadow var(--transition-base), transform var(--transition-base);
+}
+
+.stat-card:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-card), var(--shadow-glow-blue);
 }
 
 .stat-card.accent {
@@ -330,18 +342,22 @@ onMounted(() => {
   background: color-mix(in srgb, var(--accent-cyan) 4%, var(--bg-secondary));
 }
 
+.stat-card.accent:hover {
+  box-shadow: var(--shadow-card), var(--shadow-glow-cyan);
+}
+
 .stat-icon {
-  width: 34px;
-  height: 34px;
+  width: 36px;
+  height: 36px;
   border-radius: var(--radius-sm);
   display: grid;
   place-items: center;
   flex-shrink: 0;
 }
 
-.stat-icon.blue { background: color-mix(in srgb, var(--accent-blue) 14%, transparent); color: var(--accent-blue); }
-.stat-icon.green { background: color-mix(in srgb, var(--accent-green) 14%, transparent); color: var(--accent-green); }
-.stat-icon.cyan { background: color-mix(in srgb, var(--accent-cyan) 14%, transparent); color: var(--accent-cyan); }
+.stat-icon.blue { background: color-mix(in srgb, var(--accent-blue) 14%, transparent); color: var(--accent-blue); box-shadow: 0 0 10px color-mix(in srgb, var(--accent-blue) 10%, transparent); }
+.stat-icon.green { background: color-mix(in srgb, var(--accent-green) 14%, transparent); color: var(--accent-green); box-shadow: 0 0 10px color-mix(in srgb, var(--accent-green) 10%, transparent); }
+.stat-icon.cyan { background: color-mix(in srgb, var(--accent-cyan) 14%, transparent); color: var(--accent-cyan); box-shadow: 0 0 10px color-mix(in srgb, var(--accent-cyan) 10%, transparent); }
 .stat-icon.muted { background: var(--bg-tertiary); color: var(--text-tertiary); }
 
 .stat-label {
@@ -354,6 +370,7 @@ onMounted(() => {
   font-size: 1.35rem;
   font-weight: 700;
   letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Main grid */
@@ -408,6 +425,11 @@ onMounted(() => {
 .donut {
   width: 100%;
   height: 100%;
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--accent-green) 15%, transparent));
+}
+
+.donut-arc {
+  animation: draw-in 1.2s ease-out forwards;
 }
 
 .donut-label {
@@ -422,6 +444,7 @@ onMounted(() => {
 .donut-pct {
   font-size: 1.15rem;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
 .donut-sub {
@@ -443,22 +466,35 @@ onMounted(() => {
   justify-content: flex-end;
   height: 100%;
   cursor: default;
+  transition: opacity var(--transition-fast);
+}
+
+.chart-bars:hover .bar-col {
+  opacity: 0.5;
+}
+
+.chart-bars:hover .bar-col:hover {
+  opacity: 1;
+}
+
+.bar-col:hover .bar {
+  filter: brightness(1.2);
 }
 
 .bar {
   width: 100%;
   min-height: 0;
-  transition: height 600ms ease;
+  transition: height 600ms ease, filter var(--transition-fast);
 }
 
 .bar-ok {
   background: var(--accent-green);
-  border-radius: 3px 3px 0 0;
+  border-radius: 4px 4px 0 0;
 }
 
 .bar-fail {
   background: var(--accent-red);
-  border-radius: 3px 3px 0 0;
+  border-radius: 4px 4px 0 0;
 }
 
 .bar-ok + .bar-fail,
@@ -534,6 +570,13 @@ onMounted(() => {
   border-radius: var(--radius-md);
   display: grid;
   gap: 0.5rem;
+  border-left: 2px solid transparent;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.run-row:hover {
+  border-left-color: var(--accent-blue);
+  box-shadow: inset 0 0 20px color-mix(in srgb, var(--accent-blue) 3%, transparent);
 }
 
 .run-meta {
@@ -615,6 +658,8 @@ onMounted(() => {
 
 .view-all:hover {
   border-color: var(--accent-blue);
+  background: color-mix(in srgb, var(--accent-blue) 6%, transparent);
+  box-shadow: var(--shadow-glow-blue);
 }
 
 /* Community */
@@ -641,6 +686,14 @@ onMounted(() => {
   border-radius: var(--radius-full);
   font-size: 0.8rem;
   color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
+}
+
+.social-chip:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
 }
 
 @media (max-width: 900px) {

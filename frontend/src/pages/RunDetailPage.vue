@@ -210,8 +210,7 @@ async function copyLogs(): Promise<void> {
           <StatusBadge :status="run.status" />
         </div>
         <div class="progress-track">
-          <div class="progress-fill" :style="{ width: run.finished_at ? '100%' : isActive(run.status) ? '60%' : '0%', background: statusColor() }"/>
-          <span class="progress-dot" :style="{ left: run.finished_at ? '100%' : isActive(run.status) ? '60%' : '0%', background: statusColor() }"/>
+          <div class="progress-fill" :class="{ active: isActive(run.status) }" :style="{ width: run.finished_at ? '100%' : isActive(run.status) ? '60%' : '0%', '--status-color': statusColor() }"/>
         </div>
         <div class="status-times">
           <span>{{ formatTimestamp(run.started_at) }}</span>
@@ -287,7 +286,8 @@ async function copyLogs(): Promise<void> {
 }
 .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.78rem; }
 .btn-primary { background: var(--accent-blue); border-color: var(--accent-blue); color: white; }
-.btn-primary:hover { background: color-mix(in srgb, var(--accent-blue) 85%, white); }
+.btn-primary:hover { background: color-mix(in srgb, var(--accent-blue) 85%, white); box-shadow: 0 4px 16px color-mix(in srgb, var(--accent-blue) 30%, transparent); transform: translateY(-1px); }
+.btn-primary:active { transform: translateY(0); }
 .btn-primary:disabled { opacity: 0.5; cursor: default; }
 .btn-warn { color: var(--accent-yellow); border-color: color-mix(in srgb, var(--accent-yellow) 40%, var(--border-default)); }
 
@@ -312,17 +312,34 @@ async function copyLogs(): Promise<void> {
   height: 100%;
   border-radius: 3px;
   transition: width 600ms ease;
+  background: var(--status-color);
+  position: relative;
 }
 
-.progress-dot {
+.progress-fill::after {
+  content: '';
   position: absolute;
+  right: -5px;
   top: 50%;
-  width: 12px;
-  height: 12px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  transform: translate(-50%, -50%);
+  background: var(--status-color);
   border: 2px solid var(--bg-secondary);
-  transition: left 600ms ease;
+  transform: translateY(-50%);
+  transition: opacity var(--transition-fast);
+  opacity: 0;
+}
+
+.progress-fill.active::after {
+  opacity: 1;
+  box-shadow: 0 0 6px var(--status-color);
+  animation: progress-pulse 2s ease-in-out infinite;
+}
+
+@keyframes progress-pulse {
+  0%, 100% { box-shadow: 0 0 4px var(--status-color); }
+  50% { box-shadow: 0 0 12px var(--status-color), 0 0 20px var(--status-color); }
 }
 
 .status-times {
@@ -391,7 +408,9 @@ async function copyLogs(): Promise<void> {
 }
 
 .log-line:hover {
-  background: color-mix(in srgb, var(--accent-blue) 3%, transparent);
+  background: color-mix(in srgb, var(--accent-blue) 4%, transparent);
+  border-left: 2px solid color-mix(in srgb, var(--accent-blue) 40%, transparent);
+  padding-left: calc(0.65rem - 2px);
 }
 
 .log-seq {
@@ -418,11 +437,13 @@ async function copyLogs(): Promise<void> {
 .log-stream.stderr {
   background: color-mix(in srgb, var(--accent-yellow) 18%, transparent);
   color: var(--accent-yellow);
+  border: 1px solid color-mix(in srgb, var(--accent-yellow) 20%, transparent);
 }
 
 .log-stream.stdout {
   background: color-mix(in srgb, var(--accent-green) 18%, transparent);
   color: var(--accent-green);
+  border: 1px solid color-mix(in srgb, var(--accent-green) 20%, transparent);
 }
 
 .log-text {

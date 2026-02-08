@@ -126,11 +126,12 @@ function handleCreated(app: AppResponse): void {
   width: 44px;
   height: 44px;
   border-radius: var(--radius-md);
-  background: var(--bg-tertiary);
+  background: color-mix(in srgb, var(--accent-blue) 10%, var(--bg-tertiary));
   display: grid;
   place-items: center;
   color: var(--accent-blue);
   flex-shrink: 0;
+  box-shadow: 0 0 16px color-mix(in srgb, var(--accent-blue) 8%, transparent);
 }
 
 .subtitle {
@@ -175,6 +176,12 @@ function handleCreated(app: AppResponse): void {
 
 .btn-primary:hover {
   background: color-mix(in srgb, var(--accent-blue) 85%, white);
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--accent-blue) 30%, transparent);
+  transform: translateY(-1px);
+}
+
+.btn-primary:active {
+  transform: translateY(0);
 }
 
 /* Filters */
@@ -194,6 +201,12 @@ function handleCreated(app: AppResponse): void {
   background: var(--bg-secondary);
   color: var(--text-secondary);
   min-width: 240px;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.search-wrap:focus-within {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 10%, transparent);
 }
 
 .search-wrap input {
@@ -215,12 +228,15 @@ function handleCreated(app: AppResponse): void {
   display: grid;
   gap: 0.75rem;
   cursor: pointer;
-  transition: border-color var(--transition-base), box-shadow var(--transition-base);
+  transition: border-color var(--transition-base), box-shadow var(--transition-base), transform var(--transition-base);
+  border-left: 2px solid transparent;
 }
 
 .app-card:hover {
   border-color: var(--border-strong);
+  border-left-color: var(--accent-blue);
   box-shadow: var(--shadow-soft), var(--shadow-glow-blue);
+  transform: translateX(2px);
 }
 
 .app-card-top {
@@ -254,6 +270,7 @@ function handleCreated(app: AppResponse): void {
 .badge-green {
   color: var(--accent-green);
   border-color: color-mix(in srgb, var(--accent-green) 25%, var(--border-default));
+  background: color-mix(in srgb, var(--accent-green) 8%, transparent);
 }
 
 .badge-muted {

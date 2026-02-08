@@ -34,18 +34,19 @@ function logout(): void {
   align-items: center;
   justify-content: space-between;
   padding: 0.75rem 1.5rem;
-  border-bottom: 1px solid var(--border-default);
-  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--glass-border);
+  background: var(--glass-bg);
   position: sticky;
   top: 0;
   z-index: 15;
-  backdrop-filter: blur(12px);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
 }
 
 .actions {
   display: flex;
   align-items: center;
-  gap: 0.25rem;
+  gap: 0.35rem;
 }
 
 .icon-btn {
@@ -63,9 +64,20 @@ function logout(): void {
 .icon-btn:hover {
   background: var(--bg-tertiary);
   color: var(--text-primary);
+  border-color: var(--border-default);
+}
+
+.icon-btn:hover svg {
+  transform: scale(1.1);
+}
+
+.icon-btn svg {
+  transition: transform var(--transition-fast);
 }
 
 .icon-btn.logout:hover {
   color: var(--accent-red);
+  background: color-mix(in srgb, var(--accent-red) 8%, transparent);
+  border-color: color-mix(in srgb, var(--accent-red) 20%, var(--border-default));
 }
 </style>

@@ -58,6 +58,10 @@ function statusClass(status: RunStatus): string {
   background: color-mix(in srgb, var(--accent-green) 12%, transparent);
 }
 
+.ok .dot {
+  box-shadow: 0 0 6px var(--accent-green);
+}
+
 .error {
   color: var(--accent-red);
   background: color-mix(in srgb, var(--accent-red) 12%, transparent);
@@ -73,7 +77,17 @@ function statusClass(status: RunStatus): string {
   background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
 }
 
+.info .dot {
+  animation: status-pulse 2s ease-in-out infinite;
+  box-shadow: 0 0 6px var(--accent-blue);
+}
+
 .neutral {
   color: var(--text-tertiary);
+}
+
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.7); }
 }
 </style>

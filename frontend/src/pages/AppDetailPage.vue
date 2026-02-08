@@ -383,7 +383,8 @@ function submitVersionUpload(): void {
   border-color: var(--accent-blue);
   color: white;
 }
-.btn-primary:hover { background: color-mix(in srgb, var(--accent-blue) 85%, white); }
+.btn-primary:hover { background: color-mix(in srgb, var(--accent-blue) 85%, white); box-shadow: 0 4px 16px color-mix(in srgb, var(--accent-blue) 30%, transparent); transform: translateY(-1px); }
+.btn-primary:active { transform: translateY(0); }
 .btn-primary:disabled { opacity: 0.5; cursor: default; }
 
 .badges-row {
@@ -439,12 +440,17 @@ function submitVersionUpload(): void {
   font-size: 0.78rem;
   cursor: pointer;
   font-weight: 500;
+  transition: color var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.tab-row button:hover:not(.active) {
+  color: var(--text-primary);
 }
 
 .tab-row button.active {
   background: var(--bg-secondary);
   color: var(--text-primary);
-  box-shadow: var(--shadow-soft);
+  box-shadow: var(--shadow-soft), 0 0 8px color-mix(in srgb, var(--accent-blue) 8%, transparent);
 }
 
 /* Overview */
@@ -481,7 +487,18 @@ function submitVersionUpload(): void {
 /* Runs */
 .runs-list { display: grid; gap: 0.65rem; }
 
-.run-card { padding: 0.85rem 1rem; display: grid; gap: 0.5rem; }
+.run-card {
+  padding: 0.85rem 1rem;
+  display: grid;
+  gap: 0.5rem;
+  border-left: 2px solid transparent;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.run-card:hover {
+  border-left-color: var(--accent-blue);
+  box-shadow: inset 0 0 20px color-mix(in srgb, var(--accent-blue) 3%, transparent);
+}
 .run-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; }
 .run-card-left { display: grid; gap: 0.3rem; }
 .run-title { font-weight: 600; font-size: 0.92rem; }
@@ -532,9 +549,15 @@ textarea { resize: vertical; font-family: var(--font-mono); font-size: 0.82rem; 
   grid-template-columns: auto 1fr auto auto auto;
   gap: 0.75rem;
   align-items: center;
-  padding: 0.5rem 0;
+  padding: 0.55rem 0.35rem;
   border-bottom: 1px solid var(--border-default);
   font-size: 0.82rem;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-fast);
+}
+
+.ver-row:hover {
+  background: color-mix(in srgb, var(--bg-tertiary) 50%, transparent);
 }
 .ver-entry { color: var(--text-secondary); }
 .ver-sha { color: var(--text-tertiary); font-size: 0.75rem; }

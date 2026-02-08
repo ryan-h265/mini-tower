@@ -85,12 +85,22 @@ const auth = useAuthStore()
   color: var(--accent-blue);
   display: flex;
   align-items: center;
+  width: 34px;
+  height: 34px;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent-blue) 10%, transparent);
 }
 
 .brand-text {
   font-size: 1.1rem;
   font-weight: 700;
   letter-spacing: -0.02em;
+  background: var(--gradient-brand);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .nav {
@@ -118,6 +128,7 @@ const auth = useAuthStore()
   color: var(--text-secondary);
   font-size: 0.875rem;
   font-weight: 500;
+  position: relative;
 }
 
 .nav-item:hover {
@@ -125,14 +136,25 @@ const auth = useAuthStore()
   color: var(--text-primary);
 }
 
+.nav-item:hover svg {
+  transform: scale(1.08);
+}
+
+.nav-item svg {
+  transition: transform var(--transition-fast), color var(--transition-fast);
+}
+
 .nav-item.router-link-active {
-  background: color-mix(in srgb, var(--accent-blue) 12%, var(--bg-tertiary));
+  background: color-mix(in srgb, var(--accent-blue) 10%, var(--bg-tertiary));
   color: var(--text-primary);
-  box-shadow: inset 2px 0 0 var(--accent-blue);
+  box-shadow:
+    inset 2px 0 0 var(--accent-blue),
+    0 0 16px color-mix(in srgb, var(--accent-blue) 6%, transparent);
 }
 
 .nav-item.router-link-active svg {
   color: var(--accent-blue);
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent-blue) 30%, transparent));
 }
 
 .footer {
@@ -147,19 +169,25 @@ const auth = useAuthStore()
   gap: 0.55rem;
   padding: 0.4rem 0.5rem;
   border-radius: var(--radius-sm);
+  transition: background var(--transition-fast);
+}
+
+.team-badge:hover {
+  background: var(--bg-tertiary);
 }
 
 .avatar {
   width: 30px;
   height: 30px;
   border-radius: var(--radius-sm);
-  background: linear-gradient(135deg, var(--accent-blue), var(--accent-cyan));
+  background: var(--gradient-brand);
   display: grid;
   place-items: center;
   font-size: 0.75rem;
   font-weight: 700;
   color: white;
   flex-shrink: 0;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent-blue) 25%, transparent);
 }
 
 .team-info {

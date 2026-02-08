@@ -22,8 +22,9 @@ defineEmits<{ close: [] }>()
 .backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(4px);
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px) saturate(1.2);
+  -webkit-backdrop-filter: blur(8px) saturate(1.2);
   display: grid;
   place-items: center;
   padding: 1rem;
@@ -36,6 +37,11 @@ defineEmits<{ close: [] }>()
   padding: 1.25rem;
   max-height: 90vh;
   overflow-y: auto;
+  border-color: var(--glass-border);
+  box-shadow:
+    0 24px 80px rgba(0, 0, 0, 0.4),
+    0 0 0 1px var(--glass-border),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
 .close-btn {
@@ -56,16 +62,21 @@ defineEmits<{ close: [] }>()
 .close-btn:hover {
   background: var(--bg-tertiary);
   color: var(--text-primary);
+  transform: rotate(90deg);
+}
+
+.close-btn svg {
+  transition: transform var(--transition-base);
 }
 
 .modal-enter-active,
 .modal-leave-active {
-  transition: opacity 200ms ease;
+  transition: opacity 250ms ease;
 }
 
 .modal-enter-active .modal,
 .modal-leave-active .modal {
-  transition: transform 200ms ease, opacity 200ms ease;
+  transition: transform 300ms cubic-bezier(0.34, 1.56, 0.64, 1), opacity 250ms ease;
 }
 
 .modal-enter-from,
@@ -74,12 +85,12 @@ defineEmits<{ close: [] }>()
 }
 
 .modal-enter-from .modal {
-  transform: scale(0.96) translateY(8px);
+  transform: scale(0.92) translateY(12px);
   opacity: 0;
 }
 
 .modal-leave-to .modal {
-  transform: scale(0.96);
+  transform: scale(0.96) translateY(-4px);
   opacity: 0;
 }
 </style>

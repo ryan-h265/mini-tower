@@ -59,6 +59,12 @@ async function submitBootstrap(): Promise<void> {
 
 <template>
   <div class="login-page">
+    <div class="login-bg">
+      <div class="grid-pattern" />
+      <div class="orb orb-1" />
+      <div class="orb orb-2" />
+      <div class="orb orb-3" />
+    </div>
     <div class="login-container">
       <!-- Logo area -->
       <div class="brand">
@@ -134,12 +140,69 @@ async function submitBootstrap(): Promise<void> {
   place-items: center;
   padding: 2rem 1rem;
   background: var(--bg-primary);
+  position: relative;
+  overflow: hidden;
+}
+
+.login-bg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.grid-pattern {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--border-default) 30%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--border-default) 30%, transparent) 1px, transparent 1px);
+  background-size: 60px 60px;
+  mask-image: radial-gradient(ellipse 60% 50% at 50% 50%, black 20%, transparent 70%);
+  -webkit-mask-image: radial-gradient(ellipse 60% 50% at 50% 50%, black 20%, transparent 70%);
+}
+
+.orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.4;
+}
+
+.orb-1 {
+  width: 400px;
+  height: 400px;
+  background: var(--accent-blue);
+  top: -10%;
+  right: 10%;
+  animation: float 12s ease-in-out infinite;
+}
+
+.orb-2 {
+  width: 300px;
+  height: 300px;
+  background: var(--accent-purple);
+  bottom: -5%;
+  left: 5%;
+  animation: float 15s ease-in-out infinite 2s;
+}
+
+.orb-3 {
+  width: 250px;
+  height: 250px;
+  background: var(--accent-cyan);
+  top: 40%;
+  left: 50%;
+  animation: float 18s ease-in-out infinite 4s;
 }
 
 .login-container {
   width: min(420px, 100%);
   display: grid;
   gap: 1.25rem;
+  position: relative;
+  z-index: 1;
+  animation: fadeInUp 600ms ease both;
 }
 
 .brand {
@@ -151,19 +214,24 @@ async function submitBootstrap(): Promise<void> {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 56px;
-  height: 56px;
-  border-radius: 14px;
+  width: 60px;
+  height: 60px;
+  border-radius: 16px;
   background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
   color: white;
   margin-bottom: 0.75rem;
+  box-shadow:
+    0 8px 32px color-mix(in srgb, var(--accent-blue) 30%, transparent),
+    0 0 0 1px rgba(255, 255, 255, 0.1) inset;
+  animation: float 6s ease-in-out infinite;
 }
 
 .brand h1 {
   margin: 0;
-  font-size: 1.5rem;
+  font-size: 1.6rem;
   font-weight: 700;
   color: var(--text-primary);
+  letter-spacing: -0.02em;
 }
 
 .brand p {
@@ -179,18 +247,24 @@ async function submitBootstrap(): Promise<void> {
   padding: 0.6rem 0.75rem;
   border-radius: var(--radius-sm);
   border: 1px solid color-mix(in srgb, var(--accent-red) 40%, var(--border-default));
-  background: color-mix(in srgb, var(--accent-red) 8%, transparent);
+  background: color-mix(in srgb, var(--accent-red) 8%, var(--bg-secondary));
   color: var(--accent-red);
   font-size: 0.85rem;
+  backdrop-filter: blur(8px);
 }
 
 .auth-card {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  padding: 1.25rem;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  padding: 1.35rem;
   display: grid;
   gap: 0.85rem;
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow:
+    var(--shadow-elevated),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
 .auth-card h2 {
@@ -229,16 +303,17 @@ async function submitBootstrap(): Promise<void> {
 input {
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
-  background: var(--bg-tertiary);
+  background: color-mix(in srgb, var(--bg-tertiary) 80%, transparent);
   color: var(--text-primary);
-  padding: 0.55rem 0.7rem;
+  padding: 0.6rem 0.75rem;
   font-size: 0.88rem;
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
 }
 
 input:focus {
   border-color: var(--accent-blue);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 15%, transparent);
+  background: var(--bg-tertiary);
   outline: none;
 }
 
@@ -248,7 +323,7 @@ input::placeholder {
 
 .submit-btn {
   width: 100%;
-  padding: 0.6rem;
+  padding: 0.65rem;
   border: none;
   border-radius: var(--radius-sm);
   background: var(--accent-blue);
@@ -256,12 +331,18 @@ input::placeholder {
   font-size: 0.88rem;
   font-weight: 600;
   cursor: pointer;
-  transition: background var(--transition-fast);
+  transition: background var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
   margin-top: 0.15rem;
 }
 
 .submit-btn:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent-blue) 85%, white);
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--accent-blue) 30%, transparent);
+  transform: translateY(-1px);
+}
+
+.submit-btn:active:not(:disabled) {
+  transform: translateY(0);
 }
 
 .submit-btn:disabled {
@@ -277,5 +358,6 @@ input::placeholder {
 
 .submit-btn.secondary:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent-blue) 25%, var(--bg-tertiary));
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--accent-blue) 15%, transparent);
 }
 </style>

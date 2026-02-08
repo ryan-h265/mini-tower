@@ -176,6 +176,11 @@ function formatTimestamp(value?: string): string {
   padding-left: 2.2rem;
 }
 
+.search-box:focus-within svg {
+  color: var(--accent-blue);
+  transition: color var(--transition-fast);
+}
+
 input, select {
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
@@ -232,8 +237,16 @@ tbody tr:last-child td {
   border-bottom: none;
 }
 
+tbody tr {
+  transition: background var(--transition-fast);
+}
+
 tbody tr:hover {
-  background: color-mix(in srgb, var(--bg-tertiary) 50%, transparent);
+  background: color-mix(in srgb, var(--bg-tertiary) 60%, transparent);
+}
+
+tbody tr:hover .run-link {
+  text-decoration: underline;
 }
 
 .run-link {
