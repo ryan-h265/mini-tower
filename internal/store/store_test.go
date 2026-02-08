@@ -585,6 +585,101 @@ func TestRunnerStaysOnlineWhenRecentlySeen(t *testing.T) {
 	}
 }
 
+func TestRunnerStatusTransitionsOfflineWhenLastSeenMissingAndStale(t *testing.T) {
+	s, dbConn, cleanup := testutil.NewTestDB(t)
+	defer cleanup.Close(t)
+
+	ctx := context.Background()
+	runner, _ := testutil.CreateRunner(t, s, "runner-status-null-seen", "default")
+
+	tenMinutesAgo := time.Now().Add(-10 * time.Minute).UnixMilli()
+	mustExec(t, dbConn, `UPDATE runners SET last_seen_at = NULL, updated_at = ? WHERE id = ?`, tenMinutesAgo, runner.ID)
+
+	threshold := time.Now().Add(-5 * time.Minute)
+	marked, err := s.MarkStaleRunnersOffline(ctx, threshold)
+	if err != nil {
+		t.Fatalf("mark stale: %v", err)
+	}
+	if marked != 1 {
+		t.Fatalf("expected 1 runner marked offline, got %d", marked)
+	}
+
+	loaded, err := s.GetRunnerByID(ctx, runner.ID)
+	if err != nil {
+		t.Fatalf("get runner: %v", err)
+	}
+	if loaded.Status != "offline" {
+		t.Fatalf("expected offline, got %s", loaded.Status)
+	}
+}
+
+func TestPruneOfflineRunnersDeletesStaleUnreferencedRunners(t *testing.T) {
+	s, dbConn, cleanup := testutil.NewTestDB(t)
+	defer cleanup.Close(t)
+
+	ctx := context.Background()
+	runner, _ := testutil.CreateRunner(t, s, "runner-prune-stale", "default")
+
+	tenMinutesAgo := time.Now().Add(-10 * time.Minute).UnixMilli()
+	mustExec(t, dbConn, `UPDATE runners SET status = 'offline', updated_at = ? WHERE id = ?`, tenMinutesAgo, runner.ID)
+
+	pruned, err := s.PruneOfflineRunners(ctx, time.Now().Add(-5*time.Minute))
+	if err != nil {
+		t.Fatalf("prune offline runners: %v", err)
+	}
+	if pruned != 1 {
+		t.Fatalf("expected 1 pruned runner, got %d", pruned)
+	}
+
+	loaded, err := s.GetRunnerByID(ctx, runner.ID)
+	if err != nil {
+		t.Fatalf("get runner: %v", err)
+	}
+	if loaded != nil {
+		t.Fatalf("expected runner to be deleted")
+	}
+}
+
+func TestPruneOfflineRunnersSkipsReferencedRunners(t *testing.T) {
+	s, dbConn, cleanup := testutil.NewTestDB(t)
+	defer cleanup.Close(t)
+
+	ctx := context.Background()
+	team, _ := testutil.CreateTeam(t, s, "team-prune-referenced")
+	env, err := s.GetOrCreateDefaultEnvironment(ctx, team.ID)
+	if err != nil {
+		t.Fatalf("get env: %v", err)
+	}
+	app := testutil.CreateApp(t, s, team.ID, "app-prune-referenced")
+	version := testutil.CreateVersion(t, s, app.ID)
+	_ = testutil.CreateRun(t, s, team.ID, app.ID, env.ID, version.ID, 0, 0)
+	runner, _ := testutil.CreateRunner(t, s, "runner-prune-referenced", "default")
+
+	_, leaseHash, _ := auth.GenerateToken()
+	if _, _, err := s.LeaseRun(ctx, runner, leaseHash, time.Minute); err != nil {
+		t.Fatalf("lease run: %v", err)
+	}
+
+	tenMinutesAgo := time.Now().Add(-10 * time.Minute).UnixMilli()
+	mustExec(t, dbConn, `UPDATE runners SET status = 'offline', updated_at = ? WHERE id = ?`, tenMinutesAgo, runner.ID)
+
+	pruned, err := s.PruneOfflineRunners(ctx, time.Now().Add(-5*time.Minute))
+	if err != nil {
+		t.Fatalf("prune offline runners: %v", err)
+	}
+	if pruned != 0 {
+		t.Fatalf("expected 0 pruned runners, got %d", pruned)
+	}
+
+	loaded, err := s.GetRunnerByID(ctx, runner.ID)
+	if err != nil {
+		t.Fatalf("get runner: %v", err)
+	}
+	if loaded == nil {
+		t.Fatalf("expected referenced runner to remain")
+	}
+}
+
 func TestLeaseRunUpdatesRunnerLastSeen(t *testing.T) {
 	s, _, cleanup := testutil.NewTestDB(t)
 	defer cleanup.Close(t)

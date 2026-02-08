@@ -15,6 +15,7 @@ const (
 	defaultObjectsDir          = "./objects"
 	defaultLeaseTTL            = 60 * time.Second
 	defaultExpiryCheckInterval = 10 * time.Second
+	defaultRunnerPruneAfter    = 24 * time.Hour
 	defaultMaxRequestBodySize  = 10 * 1024 * 1024  // 10MB
 	defaultMaxArtifactSize     = 100 * 1024 * 1024 // 100MB
 )
@@ -29,6 +30,7 @@ type Config struct {
 	CORSOrigins             []string
 	LeaseTTL                time.Duration
 	ExpiryCheckInterval     time.Duration
+	RunnerPruneAfter        time.Duration
 	MaxRequestBodySize      int64
 	MaxArtifactSize         int64
 }
@@ -41,6 +43,7 @@ func Load() (Config, error) {
 		ObjectsDir:          defaultObjectsDir,
 		LeaseTTL:            defaultLeaseTTL,
 		ExpiryCheckInterval: defaultExpiryCheckInterval,
+		RunnerPruneAfter:    defaultRunnerPruneAfter,
 		MaxRequestBodySize:  defaultMaxRequestBodySize,
 		MaxArtifactSize:     defaultMaxArtifactSize,
 	}
@@ -70,6 +73,13 @@ func Load() (Config, error) {
 			return cfg, fmt.Errorf("invalid MINITOWER_EXPIRY_CHECK_INTERVAL: %w", err)
 		}
 		cfg.ExpiryCheckInterval = dur
+	}
+	if v := strings.TrimSpace(os.Getenv("MINITOWER_RUNNER_PRUNE_AFTER")); v != "" {
+		dur, err := time.ParseDuration(v)
+		if err != nil {
+			return cfg, fmt.Errorf("invalid MINITOWER_RUNNER_PRUNE_AFTER: %w", err)
+		}
+		cfg.RunnerPruneAfter = dur
 	}
 	if v := strings.TrimSpace(os.Getenv("MINITOWER_MAX_REQUEST_BODY_SIZE")); v != "" {
 		size, err := strconv.ParseInt(v, 10, 64)

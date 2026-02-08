@@ -111,6 +111,18 @@ func main() {
 				if marked > 0 {
 					logger.Info("marked stale runners offline", "count", marked)
 				}
+
+				if cfg.RunnerPruneAfter > 0 {
+					pruneCutoff := now.Add(-cfg.RunnerPruneAfter)
+					pruned, err := reaper.PruneOfflineRunners(ctx, pruneCutoff)
+					if err != nil {
+						logger.Error("runner prune sweep error", "error", err)
+						continue
+					}
+					if pruned > 0 {
+						logger.Info("pruned offline runners", "count", pruned)
+					}
+				}
 			}
 		}()
 	}

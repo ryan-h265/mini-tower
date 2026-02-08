@@ -142,6 +142,7 @@ Open http://localhost:5173. In development, Vite proxies `/api` to `http://local
 | `MINITOWER_CORS_ORIGINS` | — | Comma-separated CORS allowlist (for separate frontend origin deployments) |
 | `MINITOWER_LEASE_TTL` | `60s` | Runner lease duration |
 | `MINITOWER_EXPIRY_CHECK_INTERVAL` | `10s` | Lease expiry check interval |
+| `MINITOWER_RUNNER_PRUNE_AFTER` | `24h` | Delete offline runners older than this cutoff when they have no run-attempt history (set `0` to disable) |
 | `MINITOWER_MAX_REQUEST_BODY_SIZE` | `10485760` | Max request body (10MB) |
 | `MINITOWER_MAX_ARTIFACT_SIZE` | `104857600` | Max artifact upload (100MB) |
 

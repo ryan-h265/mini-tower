@@ -49,9 +49,9 @@ func (s *Store) CreateRunner(ctx context.Context, name, environment, tokenHash s
 	now := time.Now().UnixMilli()
 
 	result, err := s.db.ExecContext(ctx,
-		`INSERT INTO runners (name, environment, token_hash, status, max_concurrent, created_at, updated_at)
-     VALUES (?, ?, ?, 'online', 1, ?, ?)`,
-		name, environment, tokenHash, now, now,
+		`INSERT INTO runners (name, environment, token_hash, status, max_concurrent, last_seen_at, created_at, updated_at)
+     VALUES (?, ?, ?, 'online', 1, ?, ?, ?)`,
+		name, environment, tokenHash, now, now, now,
 	)
 	if err != nil {
 		return nil, err
@@ -61,6 +61,7 @@ func (s *Store) CreateRunner(ctx context.Context, name, environment, tokenHash s
 	if err != nil {
 		return nil, err
 	}
+	lastSeen := time.UnixMilli(now)
 
 	return &Runner{
 		ID:            id,
@@ -69,6 +70,7 @@ func (s *Store) CreateRunner(ctx context.Context, name, environment, tokenHash s
 		TokenHash:     tokenHash,
 		Status:        "online",
 		MaxConcurrent: 1,
+		LastSeenAt:    &lastSeen,
 		CreatedAt:     time.UnixMilli(now),
 		UpdatedAt:     time.UnixMilli(now),
 	}, nil
@@ -586,8 +588,36 @@ func (s *Store) MarkStaleRunnersOffline(ctx context.Context, threshold time.Time
 
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE runners SET status = 'offline', updated_at = ?
-     WHERE status = 'online' AND last_seen_at IS NOT NULL AND last_seen_at < ?`,
+     WHERE status = 'online' AND COALESCE(last_seen_at, updated_at, created_at) < ?`,
 		nowMs, thresholdMs,
+	)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return int(affected), nil
+}
+
+// PruneOfflineRunners deletes offline runners older than the cutoff.
+// To preserve run attempt history, only runners without attempts are pruned.
+func (s *Store) PruneOfflineRunners(ctx context.Context, cutoff time.Time) (int, error) {
+	cutoffMs := cutoff.UnixMilli()
+
+	result, err := s.db.ExecContext(ctx,
+		`DELETE FROM runners
+     WHERE id IN (
+       SELECT r.id
+       FROM runners r
+       WHERE r.status = 'offline'
+         AND r.updated_at < ?
+         AND NOT EXISTS (
+           SELECT 1 FROM run_attempts ra WHERE ra.runner_id = r.id
+         )
+     )`,
+		cutoffMs,
 	)
 	if err != nil {
 		return 0, err
