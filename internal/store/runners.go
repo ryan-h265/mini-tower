@@ -323,13 +323,14 @@ func scanAttempt(row *sql.Row) (*RunAttempt, error) {
 	return &a, nil
 }
 
-// GetActiveAttempt returns the current active attempt for a run, validating the lease token.
-func (s *Store) GetActiveAttempt(ctx context.Context, runID int64, leaseTokenHash string) (*RunAttempt, error) {
+// GetActiveAttempt returns the current active attempt for a run, validating both
+// runner ownership and lease token.
+func (s *Store) GetActiveAttempt(ctx context.Context, runID, runnerID int64, leaseTokenHash string) (*RunAttempt, error) {
 	a, err := scanAttempt(s.db.QueryRowContext(ctx,
 		`SELECT id, run_id, attempt_no, runner_id, lease_token_hash, lease_expires_at, status, exit_code, error_message, started_at, finished_at, created_at, updated_at
      FROM run_attempts
-     WHERE run_id = ? AND lease_token_hash = ? AND status IN ('leased', 'running', 'cancelling')`,
-		runID, leaseTokenHash,
+     WHERE run_id = ? AND runner_id = ? AND lease_token_hash = ? AND status IN ('leased', 'running', 'cancelling')`,
+		runID, runnerID, leaseTokenHash,
 	))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrInvalidLeaseToken
@@ -340,6 +341,7 @@ func (s *Store) GetActiveAttempt(ctx context.Context, runID int64, leaseTokenHas
 // StartAttempt transitions an attempt from leased to running.
 func (s *Store) StartAttempt(ctx context.Context, attemptID int64, leaseTokenHash string) (*RunAttempt, error) {
 	now := time.Now().UnixMilli()
+	shouldMarkRunRunning := true
 
 	// CAS update: leased -> running
 	result, err := s.db.ExecContext(ctx,
@@ -375,20 +377,27 @@ func (s *Store) StartAttempt(ctx context.Context, attemptID int64, leaseTokenHas
 		if status == "running" {
 			// Idempotent - already running
 		} else if status == "cancelling" {
-			return nil, ErrLeaseConflict
+			// Cancellation requested before start acknowledgement. Return the
+			// current attempt state so runner can observe cancel_requested and
+			// submit cancelled deterministically.
+			shouldMarkRunRunning = false
 		} else {
 			return nil, ErrAttemptNotActive
 		}
 	}
 
-	// Update run status to running
-	_, err = s.db.ExecContext(ctx,
-		`UPDATE runs SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ?
-     WHERE id = (SELECT run_id FROM run_attempts WHERE id = ?)`,
-		now, now, attemptID,
-	)
-	if err != nil {
-		return nil, err
+	// Update run status to running only when the attempt is in running state.
+	// Do not override cancelling status during a cancel/start race.
+	if shouldMarkRunRunning {
+		_, err = s.db.ExecContext(ctx,
+			`UPDATE runs SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ?
+	     WHERE id = (SELECT run_id FROM run_attempts WHERE id = ?)
+	       AND status IN ('queued', 'leased', 'running')`,
+			now, now, attemptID,
+		)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Return updated attempt

@@ -3,6 +3,7 @@ package main
 import (
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 )
 
@@ -76,4 +77,32 @@ func envToMap(env []string) map[string]string {
 		}
 	}
 	return out
+}
+
+func TestLoadConfigRejectsInvalidPollInterval(t *testing.T) {
+	t.Setenv("MINITOWER_SERVER_URL", "http://localhost:8080")
+	t.Setenv("MINITOWER_RUNNER_NAME", "runner-test")
+	t.Setenv("MINITOWER_POLL_INTERVAL", "not-a-duration")
+
+	_, err := loadConfig()
+	if err == nil {
+		t.Fatalf("expected error for invalid poll interval")
+	}
+	if !strings.Contains(err.Error(), "MINITOWER_POLL_INTERVAL") {
+		t.Fatalf("expected poll interval error, got: %v", err)
+	}
+}
+
+func TestLoadConfigRejectsNonPositivePollInterval(t *testing.T) {
+	t.Setenv("MINITOWER_SERVER_URL", "http://localhost:8080")
+	t.Setenv("MINITOWER_RUNNER_NAME", "runner-test")
+	t.Setenv("MINITOWER_POLL_INTERVAL", "0s")
+
+	_, err := loadConfig()
+	if err == nil {
+		t.Fatalf("expected error for non-positive poll interval")
+	}
+	if !strings.Contains(err.Error(), "must be > 0") {
+		t.Fatalf("expected non-positive poll interval error, got: %v", err)
+	}
 }

@@ -215,6 +215,50 @@ func TestStartAttemptIdempotent(t *testing.T) {
 	}
 }
 
+func TestStartAttemptReturnsCancellingOnCancelRace(t *testing.T) {
+	s, _, cleanup := testutil.NewTestDB(t)
+	defer cleanup.Close(t)
+
+	ctx := context.Background()
+	team, token := testutil.CreateTeam(t, s, "team-start-cancel-race")
+	env, err := s.GetOrCreateDefaultEnvironment(ctx, team.ID)
+	if err != nil {
+		t.Fatalf("get env: %v", err)
+	}
+	app := testutil.CreateApp(t, s, team.ID, "app-start-cancel-race")
+	version := testutil.CreateVersion(t, s, app.ID)
+	run := testutil.CreateRun(t, s, team.ID, app.ID, env.ID, version.ID, 0, 0)
+
+	runner, _ := testutil.CreateRunner(t, s, "runner-start-cancel-race", "default")
+	_, attempt, _, leaseHash := testutil.LeaseRun(t, s, runner)
+
+	updated, err := s.CancelRun(ctx, team.ID, run.ID)
+	if err != nil {
+		t.Fatalf("cancel run: %v", err)
+	}
+	if updated == nil || updated.Status != "cancelling" {
+		t.Fatalf("expected cancelling run, got %#v", updated)
+	}
+
+	a, err := s.StartAttempt(ctx, attempt.ID, leaseHash)
+	if err != nil {
+		t.Fatalf("start attempt during cancellation: %v", err)
+	}
+	if a.Status != "cancelling" {
+		t.Fatalf("expected cancelling attempt, got %s", a.Status)
+	}
+
+	loaded, err := s.GetRunByID(ctx, team.ID, run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if loaded.Status != "cancelling" {
+		t.Fatalf("expected run to remain cancelling, got %s", loaded.Status)
+	}
+
+	_ = token
+}
+
 func TestHeartbeatIdempotent(t *testing.T) {
 	s, _, cleanup := testutil.NewTestDB(t)
 	defer cleanup.Close(t)

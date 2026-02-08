@@ -137,7 +137,7 @@ Open http://localhost:5173. In development, Vite proxies `/api` to `http://local
 | `MINITOWER_LISTEN_ADDR` | `:8080` | HTTP listen address |
 | `MINITOWER_DB_PATH` | `./minitower.db` | SQLite database path |
 | `MINITOWER_OBJECTS_DIR` | `./objects` | Artifact storage directory |
-| `MINITOWER_BOOTSTRAP_TOKEN` | `dev` | Token for team bootstrap |
+| `MINITOWER_BOOTSTRAP_TOKEN` | — | Token for team bootstrap (required) |
 | `MINITOWER_RUNNER_REGISTRATION_TOKEN` | — | Token for runner registration (required) |
 | `MINITOWER_CORS_ORIGINS` | — | Comma-separated CORS allowlist (for separate frontend origin deployments) |
 | `MINITOWER_LEASE_TTL` | `60s` | Runner lease duration |

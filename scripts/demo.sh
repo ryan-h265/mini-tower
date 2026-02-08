@@ -1,79 +1,124 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-# MiniTower Demo Script
-# Usage: ./scripts/demo.sh
+# MiniTower local demo (non-compose).
+# Usage:
+#   ./scripts/demo.sh           # run demo and exit
+#   ./scripts/demo.sh --hold    # keep server/runner running at the end
 
 cd "$(dirname "$0")/.."
+
+PORT="${MINITOWER_DEMO_PORT:-18080}"
+BASE_URL="http://localhost:${PORT}"
+BOOTSTRAP_TOKEN="${MINITOWER_BOOTSTRAP_TOKEN:-secret}"
+RUNNER_REG_TOKEN="${MINITOWER_RUNNER_REGISTRATION_TOKEN:-runner-secret}"
+HOLD=false
+
+for arg in "$@"; do
+  case "$arg" in
+    --hold) HOLD=true ;;
+  esac
+done
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || { echo "ERROR: required command not found: $1"; exit 1; }
+}
+
+need_cmd curl
+need_cmd jq
+need_cmd tar
+need_cmd go
+
+SERVER_PID=""
+RUNNER_PID=""
+DEMO_TMP_DIR="/tmp/minitower-demo"
+DEMO_DB="./minitower-demo.db"
+DEMO_OBJ="./objects-demo"
+
+cleanup() {
+  echo
+  echo "Cleaning up..."
+  if [ -n "${RUNNER_PID}" ]; then
+    kill "${RUNNER_PID}" 2>/dev/null || true
+  fi
+  if [ -n "${SERVER_PID}" ]; then
+    kill "${SERVER_PID}" 2>/dev/null || true
+  fi
+  rm -rf "${DEMO_TMP_DIR}"
+}
+trap cleanup EXIT
 
 echo "=== MiniTower Demo ==="
 echo ""
 
-# Kill any existing processes
-pkill -f "bin/minitowerd" 2>/dev/null || true
-pkill -f "bin/minitower-runner" 2>/dev/null || true
-sleep 1
+# Cleanup local demo state only.
+rm -f "${DEMO_DB}" "${DEMO_DB}-wal" "${DEMO_DB}-shm"
+rm -rf "${DEMO_OBJ}"
+rm -rf "${DEMO_TMP_DIR}"
 
-# Cleanup
-rm -f minitower.db minitower.db-wal minitower.db-shm
-rm -rf objects
-rm -rf /tmp/minitower-demo
-
-# Build
+# Build binaries.
 echo "Building..."
-go build -o bin/minitowerd ./cmd/minitowerd
-go build -o bin/minitower-runner ./cmd/minitower-runner
+GOCACHE="${GOCACHE:-/tmp/minitower-gocache}" go build -o bin/minitowerd ./cmd/minitowerd
+GOCACHE="${GOCACHE:-/tmp/minitower-gocache}" go build -o bin/minitower-runner ./cmd/minitower-runner
+GOCACHE="${GOCACHE:-/tmp/minitower-gocache}" go build -o bin/minitower-cli ./cmd/minitower-cli
 echo "Built binaries in ./bin/"
 echo ""
 
-# Start server
-echo "Starting server..."
-MINITOWER_BOOTSTRAP_TOKEN=secret MINITOWER_RUNNER_REGISTRATION_TOKEN=runner-secret ./bin/minitowerd &
+# Start server.
+echo "Starting server on ${BASE_URL}..."
+MINITOWER_LISTEN_ADDR=":${PORT}" \
+MINITOWER_DB_PATH="${DEMO_DB}" \
+MINITOWER_OBJECTS_DIR="${DEMO_OBJ}" \
+MINITOWER_BOOTSTRAP_TOKEN="${BOOTSTRAP_TOKEN}" \
+MINITOWER_RUNNER_REGISTRATION_TOKEN="${RUNNER_REG_TOKEN}" \
+./bin/minitowerd &
 SERVER_PID=$!
-sleep 2
-echo "Server running (PID: $SERVER_PID)"
+
+# Wait for server readiness.
+for i in $(seq 1 50); do
+  if curl -sf "${BASE_URL}/health" >/dev/null 2>&1; then
+    break
+  fi
+  if [ "$i" -eq 50 ]; then
+    echo "ERROR: server failed to start"
+    exit 1
+  fi
+  sleep 0.2
+done
+
+echo "Server running (PID: ${SERVER_PID})"
 echo ""
 
-# Cleanup function
-cleanup() {
-  echo ""
-  echo "Cleaning up..."
-  kill $SERVER_PID 2>/dev/null || true
-  kill $RUNNER_PID 2>/dev/null || true
-  rm -rf /tmp/minitower-demo
-}
-trap cleanup EXIT
-
-# Bootstrap team
 echo "=== 1. Bootstrap Team ==="
-BOOTSTRAP_RESP=$(curl -s -X POST http://localhost:8080/api/v1/bootstrap/team \
-  -H "Authorization: Bearer secret" \
+BOOTSTRAP_HTTP=$(curl -sS -o /tmp/minitower-demo-bootstrap.json -w "%{http_code}" -X POST "${BASE_URL}/api/v1/bootstrap/team" \
+  -H "Authorization: Bearer ${BOOTSTRAP_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{"slug":"myteam","name":"My Team"}')
-echo "$BOOTSTRAP_RESP" | jq .
 
-TOKEN=$(echo "$BOOTSTRAP_RESP" | jq -r '.token')
+if [ "${BOOTSTRAP_HTTP}" != "200" ] && [ "${BOOTSTRAP_HTTP}" != "201" ]; then
+  echo "ERROR: bootstrap failed (HTTP ${BOOTSTRAP_HTTP})"
+  cat /tmp/minitower-demo-bootstrap.json
+  exit 1
+fi
 
+cat /tmp/minitower-demo-bootstrap.json | jq .
+TOKEN=$(jq -r '.token // empty' /tmp/minitower-demo-bootstrap.json)
+if [ -z "${TOKEN}" ]; then
+  echo "ERROR: bootstrap returned no token"
+  exit 1
+fi
 echo ""
-echo "Team API Token: $TOKEN"
+echo "Team API Token: ${TOKEN}"
 echo ""
 
-# Create app
-echo "=== 2. Create App ==="
-curl -s -X POST http://localhost:8080/api/v1/apps \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"slug":"hello-world","description":"A simple hello world app"}' | jq .
-echo ""
-
-# Create a Python script for the version
-mkdir -p /tmp/minitower-demo
-cat > /tmp/minitower-demo/main.py << 'PYTHON'
+echo "=== 2. Prepare Demo Project ==="
+PROJECT_DIR="${DEMO_TMP_DIR}/project"
+mkdir -p "${PROJECT_DIR}"
+cat > "${PROJECT_DIR}/main.py" << 'PYTHON'
 #!/usr/bin/env python3
 import os
 import time
 
-# Input parameters are exported as env vars by key.
 name = os.getenv("name", "World")
 count = int(os.getenv("count", "10"))
 
@@ -86,74 +131,105 @@ for i in range(1, count + 1):
 print(f"Hello, {name}! Job completed successfully.")
 PYTHON
 
-# Package as tarball
-tar -czf /tmp/minitower-demo/artifact.tar.gz -C /tmp/minitower-demo main.py
+cat > "${PROJECT_DIR}/Towerfile" << 'TOML'
+[app]
+name = "hello-world"
+script = "main.py"
+source = ["./*.py"]
 
-echo "=== 3. Upload Version ==="
-curl -s -X POST http://localhost:8080/api/v1/apps/hello-world/versions \
-  -H "Authorization: Bearer $TOKEN" \
-  -F "artifact=@/tmp/minitower-demo/artifact.tar.gz" \
-  -F "entrypoint=main.py" \
-  -F "timeout_seconds=60" | jq .
+[app.timeout]
+seconds = 60
+
+[[parameters]]
+name = "name"
+description = "Name to greet"
+type = "string"
+default = "World"
+
+[[parameters]]
+name = "count"
+description = "Loop count"
+type = "integer"
+default = 10
+TOML
+
+echo "Project created at ${PROJECT_DIR}"
+echo ""
+
+echo "=== 3. Deploy with CLI ==="
+DEPLOY_OUTPUT=$(./bin/minitower-cli deploy \
+  --server "${BASE_URL}" \
+  --token "${TOKEN}" \
+  --dir "${PROJECT_DIR}" 2>&1)
+
+echo "${DEPLOY_OUTPUT}"
 echo ""
 
 echo "=== 4. Create Run ==="
-RUN_RESP=$(curl -s -X POST http://localhost:8080/api/v1/apps/hello-world/runs \
-  -H "Authorization: Bearer $TOKEN" \
+RUN_HTTP=$(curl -sS -o /tmp/minitower-demo-run.json -w "%{http_code}" -X POST "${BASE_URL}/api/v1/apps/hello-world/runs" \
+  -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{"input":{"name":"MiniTower","count":10}}')
-echo "$RUN_RESP" | jq .
-RUN_ID=$(echo "$RUN_RESP" | jq -r '.run_id')
+
+if [ "${RUN_HTTP}" != "201" ]; then
+  echo "ERROR: create run failed (HTTP ${RUN_HTTP})"
+  cat /tmp/minitower-demo-run.json
+  exit 1
+fi
+
+cat /tmp/minitower-demo-run.json | jq .
+RUN_ID=$(jq -r '.run_id // empty' /tmp/minitower-demo-run.json)
+if [ -z "${RUN_ID}" ]; then
+  echo "ERROR: run response missing run_id"
+  exit 1
+fi
 echo ""
 
 echo "=== 5. Start Runner ==="
-mkdir -p /tmp/minitower-demo/runner
-MINITOWER_SERVER_URL=http://localhost:8080 \
-MINITOWER_RUNNER_NAME=demo-runner \
-MINITOWER_RUNNER_REGISTRATION_TOKEN=runner-secret \
-MINITOWER_DATA_DIR=/tmp/minitower-demo/runner \
+mkdir -p "${DEMO_TMP_DIR}/runner"
+MINITOWER_SERVER_URL="${BASE_URL}" \
+MINITOWER_RUNNER_NAME="demo-runner" \
+MINITOWER_RUNNER_REGISTRATION_TOKEN="${RUNNER_REG_TOKEN}" \
+MINITOWER_DATA_DIR="${DEMO_TMP_DIR}/runner" \
 MINITOWER_POLL_INTERVAL=2s \
 ./bin/minitower-runner &
 RUNNER_PID=$!
-echo "Runner started (PID: $RUNNER_PID)"
+echo "Runner started (PID: ${RUNNER_PID})"
 echo ""
 
 echo "Waiting for run to complete..."
-for i in {1..30}; do
-  STATUS=$(curl -s "http://localhost:8080/api/v1/runs/$RUN_ID" \
-    -H "Authorization: Bearer $TOKEN" | jq -r '.status')
-  if [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ]; then
+for i in $(seq 1 90); do
+  STATUS=$(curl -sS "${BASE_URL}/api/v1/runs/${RUN_ID}" \
+    -H "Authorization: Bearer ${TOKEN}" | jq -r '.status')
+  if [ "${STATUS}" = "completed" ] || [ "${STATUS}" = "failed" ] || [ "${STATUS}" = "cancelled" ] || [ "${STATUS}" = "dead" ]; then
     break
   fi
   sleep 1
 done
-echo ""
 
+echo ""
 echo "=== 6. Check Run Status ==="
-curl -s "http://localhost:8080/api/v1/runs/$RUN_ID" \
-  -H "Authorization: Bearer $TOKEN" | jq .
-echo ""
+curl -sS "${BASE_URL}/api/v1/runs/${RUN_ID}" \
+  -H "Authorization: Bearer ${TOKEN}" | jq .
 
+echo ""
 echo "=== 7. Check Run Logs ==="
-curl -s "http://localhost:8080/api/v1/runs/$RUN_ID/logs" \
-  -H "Authorization: Bearer $TOKEN" | jq .
+curl -sS "${BASE_URL}/api/v1/runs/${RUN_ID}/logs" \
+  -H "Authorization: Bearer ${TOKEN}" | jq .
+
+FINAL_STATUS=$(curl -sS "${BASE_URL}/api/v1/runs/${RUN_ID}" \
+  -H "Authorization: Bearer ${TOKEN}" | jq -r '.status')
+if [ "${FINAL_STATUS}" != "completed" ]; then
+  echo "ERROR: expected completed status, got ${FINAL_STATUS}"
+  exit 1
+fi
+
+echo ""
+echo "=== Demo Complete ==="
+echo "UI: ${BASE_URL}"
 echo ""
 
-echo "=== Demo Complete ==="
-echo ""
-echo "The server is still running. You can now run manual commands:"
-echo ""
-echo "# List apps"
-echo "curl -s http://localhost:8080/api/v1/apps -H 'Authorization: Bearer $TOKEN' | jq ."
-echo ""
-echo "# Create another run"
-echo "curl -s -X POST http://localhost:8080/api/v1/apps/hello-world/runs \\"
-echo "  -H 'Authorization: Bearer $TOKEN' \\"
-echo "  -H 'Content-Type: application/json' \\"
-echo "  -d '{\"input\":{\"name\":\"Test\",\"count\":2}}' | jq ."
-echo ""
-echo "# Check run status"
-echo "curl -s http://localhost:8080/api/v1/runs/2 -H 'Authorization: Bearer $TOKEN' | jq ."
-echo ""
-echo "Press Ctrl+C to stop..."
-wait
+if [ "${HOLD}" = true ]; then
+  echo "Hold mode enabled; services remain running. Press Ctrl+C to stop."
+  wait
+fi

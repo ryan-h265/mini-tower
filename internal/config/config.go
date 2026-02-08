@@ -13,7 +13,6 @@ const (
 	defaultListenAddr          = ":8080"
 	defaultDBPath              = "./minitower.db"
 	defaultObjectsDir          = "./objects"
-	defaultBootstrapToken      = "dev"
 	defaultLeaseTTL            = 60 * time.Second
 	defaultExpiryCheckInterval = 10 * time.Second
 	defaultMaxRequestBodySize  = 10 * 1024 * 1024  // 10MB
@@ -40,7 +39,6 @@ func Load() (Config, error) {
 		ListenAddr:          defaultListenAddr,
 		DBPath:              defaultDBPath,
 		ObjectsDir:          defaultObjectsDir,
-		BootstrapToken:      defaultBootstrapToken,
 		LeaseTTL:            defaultLeaseTTL,
 		ExpiryCheckInterval: defaultExpiryCheckInterval,
 		MaxRequestBodySize:  defaultMaxRequestBodySize,

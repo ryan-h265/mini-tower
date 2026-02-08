@@ -22,6 +22,11 @@ func (h *Handlers) requireLeaseContext(w http.ResponseWriter, r *http.Request, e
 		writeError(w, http.StatusBadRequest, "invalid_request", "invalid run ID")
 		return 0, nil, "", false
 	}
+	runnerID, ok := runnerIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "missing runner context")
+		return 0, nil, "", false
+	}
 
 	leaseToken := r.Header.Get("X-Lease-Token")
 	if leaseToken == "" {
@@ -30,7 +35,7 @@ func (h *Handlers) requireLeaseContext(w http.ResponseWriter, r *http.Request, e
 	}
 	leaseTokenHash = auth.HashToken(leaseToken)
 
-	attempt, err := h.store.GetActiveAttempt(r.Context(), runID, leaseTokenHash)
+	attempt, err := h.store.GetActiveAttempt(r.Context(), runID, runnerID, leaseTokenHash)
 	if writeStoreError(w, h.logger, err, "get active attempt") {
 		return 0, nil, "", false
 	}
@@ -171,6 +176,13 @@ func (h *Handlers) LeaseRun(w http.ResponseWriter, r *http.Request) {
 	runner := &store.Runner{
 		ID:          runnerID,
 		Environment: environment,
+	}
+
+	// Update liveness on every lease poll, including no-work responses.
+	if err := h.store.MarkRunnerOnline(r.Context(), runnerID); err != nil {
+		h.logger.Error("mark runner online", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal", "internal error")
+		return
 	}
 
 	// Generate lease token

@@ -42,7 +42,9 @@ const (
 	defaultTimeout       = 300 * time.Second
 	defaultLeaseExpiry   = 60 * time.Second
 	logBatchSize         = 100
-	logScanBufSize       = 8192
+	logLineMaxBytes      = 8192
+	logScanBufSize       = 64 * 1024
+	logScanMaxTokenSize  = 1 * 1024 * 1024
 	logFlushInterval     = 2 * time.Second
 )
 
@@ -125,9 +127,13 @@ func loadConfig() (*Config, error) {
 
 	if v := os.Getenv("MINITOWER_POLL_INTERVAL"); v != "" {
 		d, err := time.ParseDuration(v)
-		if err == nil {
-			cfg.PollInterval = d
+		if err != nil {
+			return nil, fmt.Errorf("invalid MINITOWER_POLL_INTERVAL: %w", err)
 		}
+		if d <= 0 {
+			return nil, errors.New("MINITOWER_POLL_INTERVAL must be > 0")
+		}
+		cfg.PollInterval = d
 	}
 
 	if v := os.Getenv("MINITOWER_KILL_GRACE_PERIOD"); v != "" {
@@ -196,8 +202,11 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.logger.Error("poll error", "error", err)
 		}
 
-		// Add jitter to poll interval
-		jitter := time.Duration(rand.Int63n(int64(r.cfg.PollInterval / 2)))
+		// Add jitter to poll interval.
+		jitter := time.Duration(0)
+		if half := r.cfg.PollInterval / 2; half > 0 {
+			jitter = time.Duration(rand.Int63n(int64(half)))
+		}
 		select {
 		case <-ctx.Done():
 			return nil
@@ -785,14 +794,19 @@ func newLogCollector(r *Runner, lease *LeaseResponse, state *runState, terminate
 // collect reads lines from reader and appends them to the log buffer, flushing when the batch is full.
 func (lc *logCollector) collect(ctx context.Context, reader io.Reader, stream string) {
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, logScanBufSize), logScanBufSize)
+	scanner.Buffer(make([]byte, logScanBufSize), logScanMaxTokenSize)
 	for scanner.Scan() {
+		line := scanner.Text()
+		if len(line) > logLineMaxBytes {
+			line = line[:logLineMaxBytes]
+		}
+
 		lc.mu.Lock()
 		lc.seq++
 		lc.logs = append(lc.logs, logEntry{
 			Seq:      lc.seq,
 			Stream:   stream,
-			Line:     scanner.Text(),
+			Line:     line,
 			LoggedAt: time.Now().Format(time.RFC3339),
 		})
 		if len(lc.logs) >= logBatchSize {
@@ -811,6 +825,11 @@ func (lc *logCollector) collect(ctx context.Context, reader io.Reader, stream st
 		} else {
 			lc.mu.Unlock()
 		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		lc.r.logger.Warn("log collection failed", "stream", stream, "error", err)
+		lc.terminate("log collection failed")
 	}
 }
 

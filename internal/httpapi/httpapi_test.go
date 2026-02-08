@@ -166,6 +166,31 @@ func TestRunnerEndpointsRejectStaleLeaseToken(t *testing.T) {
 	_ = leaseToken
 }
 
+func TestRunnerEndpointsRejectLeaseOwnedByAnotherRunner(t *testing.T) {
+	handler, s, _, cleanup := newTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	team, _ := testutil.CreateTeam(t, s, "team-runner-ownership")
+	env, err := s.GetOrCreateDefaultEnvironment(ctx, team.ID)
+	if err != nil {
+		t.Fatalf("get env: %v", err)
+	}
+	app := testutil.CreateApp(t, s, team.ID, "app-runner-ownership")
+	version := testutil.CreateVersion(t, s, app.ID)
+	run := testutil.CreateRun(t, s, team.ID, app.ID, env.ID, version.ID, 0, 0)
+
+	ownerRunner, _ := testutil.CreateRunner(t, s, "runner-owner", "default")
+	_, attackerToken := testutil.CreateRunner(t, s, "runner-attacker", "default")
+	leaseToken, leaseHash, _ := auth.GenerateToken()
+	if _, _, err := s.LeaseRun(ctx, ownerRunner, leaseHash, time.Minute); err != nil {
+		t.Fatalf("lease run: %v", err)
+	}
+
+	resp := doRequest(t, handler, http.MethodPost, "/api/v1/runs/"+itoa(run.ID)+"/start", attackerToken, leaseToken, nil)
+	assertGone(t, resp)
+}
+
 func TestRunnerStartHeartbeatResponsesIncludeLeaseFields(t *testing.T) {
 	handler, s, _, cleanup := newTestServer(t)
 	defer cleanup()
@@ -199,6 +224,53 @@ func TestRunnerStartHeartbeatResponsesIncludeLeaseFields(t *testing.T) {
 		t.Fatalf("heartbeat status: %d", resp.StatusCode)
 	}
 	assertLeaseFields(t, resp.Body)
+}
+
+func TestRunnerStartReturnsCancellingWhenRunIsCancelling(t *testing.T) {
+	handler, s, _, cleanup := newTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	team, teamToken := testutil.CreateTeam(t, s, "team-start-cancel-http")
+	env, err := s.GetOrCreateDefaultEnvironment(ctx, team.ID)
+	if err != nil {
+		t.Fatalf("get env: %v", err)
+	}
+	app := testutil.CreateApp(t, s, team.ID, "app-start-cancel-http")
+	version := testutil.CreateVersion(t, s, app.ID)
+	run := testutil.CreateRun(t, s, team.ID, app.ID, env.ID, version.ID, 0, 0)
+
+	runner, runnerToken := testutil.CreateRunner(t, s, "runner-start-cancel-http", "default")
+	leaseToken, leaseHash, _ := auth.GenerateToken()
+	if _, _, err := s.LeaseRun(ctx, runner, leaseHash, time.Minute); err != nil {
+		t.Fatalf("lease run: %v", err)
+	}
+
+	cancelResp := doRequest(t, handler, http.MethodPost, "/api/v1/runs/"+itoa(run.ID)+"/cancel", teamToken, "", nil)
+	defer cancelResp.Body.Close()
+	if cancelResp.StatusCode != http.StatusOK {
+		t.Fatalf("cancel status: %d", cancelResp.StatusCode)
+	}
+
+	startResp := doRequest(t, handler, http.MethodPost, "/api/v1/runs/"+itoa(run.ID)+"/start", runnerToken, leaseToken, nil)
+	defer startResp.Body.Close()
+	if startResp.StatusCode != http.StatusOK {
+		t.Fatalf("start status: %d", startResp.StatusCode)
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(startResp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode start response: %v", err)
+	}
+	if payload["status"] != "cancelling" {
+		t.Fatalf("expected cancelling status, got %v", payload["status"])
+	}
+	if payload["cancel_requested"] != true {
+		t.Fatalf("expected cancel_requested true, got %v", payload["cancel_requested"])
+	}
+	if payload["run_status"] != "cancelling" {
+		t.Fatalf("expected run_status cancelling, got %v", payload["run_status"])
+	}
 }
 
 func TestCancelRunEndpointQueued(t *testing.T) {

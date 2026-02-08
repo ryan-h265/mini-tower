@@ -69,7 +69,9 @@ func main() {
 				case <-ticker.C:
 				}
 
-				results, err := reaper.ReapExpiredAttempts(ctx, time.Now(), 100)
+				now := time.Now()
+
+				results, err := reaper.ReapExpiredAttempts(ctx, now, 100)
 				if err != nil {
 					logger.Error("expiry reaper error", "error", err)
 					continue
@@ -96,6 +98,18 @@ func main() {
 					case "dead", "cancelled":
 						metrics.RunCompleted(teamSlug, appSlug, r.Outcome)
 					}
+				}
+
+				// Mark long-inactive runners offline so admin visibility reflects
+				// current availability and stale tokens are fenced.
+				offlineThreshold := now.Add(-(2 * cfg.LeaseTTL))
+				marked, err := reaper.MarkStaleRunnersOffline(ctx, offlineThreshold)
+				if err != nil {
+					logger.Error("runner offline sweep error", "error", err)
+					continue
+				}
+				if marked > 0 {
+					logger.Info("marked stale runners offline", "count", marked)
 				}
 			}
 		}()
