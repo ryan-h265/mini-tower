@@ -284,7 +284,6 @@ API client and transport:
 ### Scripts and demos
 
 - `scripts/smoke.sh`: smoke test from boot to run completion.
-- `scripts/demo.sh`: manual local demo flow.
 - `scripts/demo-compose.sh`: compose-friendly demo loop.
 - `scripts/curl-examples.md`: manual API recipes.
 
