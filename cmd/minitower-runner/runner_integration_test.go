@@ -197,6 +197,67 @@ func TestRunnerStreamsBufferedPythonLogsBeforeExit(t *testing.T) {
 	}
 }
 
+func TestRunnerEmitsSetupLogs(t *testing.T) {
+	python := requirePython(t)
+	requireTar(t)
+
+	artifact, sha := buildArtifact(t, "print('hello', flush=True)\n")
+
+	server := newRunnerServer(t, serverConfig{
+		artifact:       artifact,
+		artifactSHA256: sha,
+		heartbeatCode:  http.StatusOK,
+		logsCode:       http.StatusOK,
+		resultCode:     http.StatusOK,
+	})
+
+	runner := newTestRunner(t, "http://runner.test", python, server.handler)
+	lease := makeLease(time.Now().Add(10*time.Second), 20)
+
+	if err := runner.executeRun(context.Background(), lease); err != nil {
+		t.Fatalf("execute run: %v", err)
+	}
+
+	batches := server.snapshotLogBatches()
+	if !logContains(batches, "downloading run artifact") {
+		t.Fatalf("expected setup log for artifact download, got %#v", batches)
+	}
+	if !logContains(batches, "creating virtual environment at: .venv") {
+		t.Fatalf("expected setup log for venv creation, got %#v", batches)
+	}
+}
+
+func TestRunnerEmitsFailureReasonLogLine(t *testing.T) {
+	python := requirePython(t)
+	requireTar(t)
+
+	artifact, sha := buildArtifact(t, "import sys\nsys.exit(3)\n")
+
+	server := newRunnerServer(t, serverConfig{
+		artifact:       artifact,
+		artifactSHA256: sha,
+		heartbeatCode:  http.StatusOK,
+		logsCode:       http.StatusOK,
+		resultCode:     http.StatusOK,
+	})
+
+	runner := newTestRunner(t, "http://runner.test", python, server.handler)
+	lease := makeLease(time.Now().Add(10*time.Second), 20)
+
+	if err := runner.executeRun(context.Background(), lease); err != nil {
+		t.Fatalf("execute run: %v", err)
+	}
+
+	if server.lastResultStatus != "failed" {
+		t.Fatalf("expected failed status, got %q", server.lastResultStatus)
+	}
+
+	batches := server.snapshotLogBatches()
+	if !logContains(batches, "run failed: process exited with code 3") {
+		t.Fatalf("expected failure reason log line, got %#v", batches)
+	}
+}
+
 type serverConfig struct {
 	artifact       []byte
 	artifactSHA256 string
@@ -328,6 +389,17 @@ func (rs *runnerServer) snapshotLogBatches() [][]string {
 		out[i] = append([]string(nil), rs.logBatches[i]...)
 	}
 	return out
+}
+
+func logContains(batches [][]string, want string) bool {
+	for _, batch := range batches {
+		for _, line := range batch {
+			if strings.Contains(line, want) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func authHandler(next http.Handler) http.Handler {

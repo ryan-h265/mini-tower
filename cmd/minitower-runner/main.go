@@ -46,6 +46,7 @@ const (
 	logScanBufSize       = 64 * 1024
 	logScanMaxTokenSize  = 1 * 1024 * 1024
 	logFlushInterval     = 2 * time.Second
+	commandErrorMaxBytes = 2048
 )
 
 // runState holds mutex-protected shared state for a run's lifetime.
@@ -318,9 +319,10 @@ type workspaceResult struct {
 // and (for Python entrypoints) creates a venv and installs requirements.
 // Returns the workspace result. Propagates ErrStaleLease from download; other
 // errors are submitted as user-facing failure messages.
-func (r *Runner) prepareWorkspace(ctx context.Context, lease *LeaseResponse) (*workspaceResult, error) {
+func (r *Runner) prepareWorkspace(ctx context.Context, lease *LeaseResponse, lc *logCollector) (*workspaceResult, error) {
 	workDir, err := os.MkdirTemp("", fmt.Sprintf("minitower-run-%d-", lease.RunID))
 	if err != nil {
+		lc.logSetup(ctx, "failed to create workspace")
 		if submitErr := r.submitFailure(ctx, lease, "failed to create workspace"); submitErr != nil {
 			return nil, submitErr
 		}
@@ -328,14 +330,16 @@ func (r *Runner) prepareWorkspace(ctx context.Context, lease *LeaseResponse) (*w
 	}
 	cleanup := func() { os.RemoveAll(workDir) }
 
+	lc.logSetup(ctx, "downloading run artifact")
 	dl, err := r.downloadArtifact(ctx, lease, filepath.Join(workDir, "artifact.tar.gz"))
 	if err != nil {
 		r.logger.Error("artifact download failed", "error", err)
+		lc.logSetup(ctx, fmt.Sprintf("artifact download failed: %v", err))
 		cleanup()
 		if errors.Is(err, ErrStaleLease) {
 			return nil, ErrStaleLease
 		}
-		if submitErr := r.submitFailure(ctx, lease, "failed to download artifact"); submitErr != nil {
+		if submitErr := r.submitFailure(ctx, lease, fmt.Sprintf("failed to download artifact: %v", err)); submitErr != nil {
 			return nil, submitErr
 		}
 		return nil, err
@@ -343,21 +347,26 @@ func (r *Runner) prepareWorkspace(ctx context.Context, lease *LeaseResponse) (*w
 
 	if err := r.unpackArtifact(filepath.Join(workDir, "artifact.tar.gz"), workDir); err != nil {
 		r.logger.Error("unpack failed", "error", err)
+		lc.logSetup(ctx, fmt.Sprintf("artifact unpack failed: %v", err))
 		cleanup()
-		if submitErr := r.submitFailure(ctx, lease, "failed to unpack artifact"); submitErr != nil {
+		if submitErr := r.submitFailure(ctx, lease, fmt.Sprintf("failed to unpack artifact: %v", err)); submitErr != nil {
 			return nil, submitErr
 		}
 		return nil, err
 	}
+	lc.logSetup(ctx, fmt.Sprintf("artifact unpacked (sha256: %s)", dl.SHA256))
 	r.logger.Info("artifact unpacked", "sha256", dl.SHA256)
 
 	// Only set up Python venv for .py entrypoints.
 	if strings.HasSuffix(lease.Entrypoint, ".py") {
 		venvPath := filepath.Join(workDir, ".venv")
+		lc.logSetup(ctx, fmt.Sprintf("using Python interpreter at: %s", r.cfg.PythonBin))
+		lc.logSetup(ctx, "creating virtual environment at: .venv")
 		if err := r.createVenv(ctx, venvPath); err != nil {
 			r.logger.Error("venv creation failed", "error", err)
+			lc.logSetup(ctx, fmt.Sprintf("virtual environment creation failed: %v", err))
 			cleanup()
-			if submitErr := r.submitFailure(ctx, lease, "failed to create venv"); submitErr != nil {
+			if submitErr := r.submitFailure(ctx, lease, fmt.Sprintf("failed to create venv: %v", err)); submitErr != nil {
 				return nil, submitErr
 			}
 			return nil, err
@@ -365,10 +374,12 @@ func (r *Runner) prepareWorkspace(ctx context.Context, lease *LeaseResponse) (*w
 
 		reqPath := filepath.Join(workDir, "requirements.txt")
 		if _, err := os.Stat(reqPath); err == nil {
+			lc.logSetup(ctx, "installing dependencies from requirements.txt")
 			if err := r.installRequirements(ctx, venvPath, reqPath); err != nil {
 				r.logger.Error("requirements install failed", "error", err)
+				lc.logSetup(ctx, fmt.Sprintf("dependency installation failed: %v", err))
 				cleanup()
-				if submitErr := r.submitFailure(ctx, lease, "failed to install requirements"); submitErr != nil {
+				if submitErr := r.submitFailure(ctx, lease, fmt.Sprintf("failed to install requirements: %v", err)); submitErr != nil {
 					return nil, submitErr
 				}
 				return nil, err
@@ -435,7 +446,7 @@ func (r *Runner) runHeartbeat(runCtx context.Context, lease *LeaseResponse, stat
 
 // runProcess sets up and runs the user process, streams logs, and submits the final result.
 // The heartbeat goroutine is already running; heartbeatDone closes when it exits.
-func (r *Runner) runProcess(ctx context.Context, runCtx context.Context, cancel context.CancelFunc, lease *LeaseResponse, state *runState, ws *workspaceResult, heartbeatDone <-chan struct{}, baseTerminate func(string)) error {
+func (r *Runner) runProcess(ctx context.Context, runCtx context.Context, cancel context.CancelFunc, lease *LeaseResponse, state *runState, ws *workspaceResult, lc *logCollector, heartbeatDone <-chan struct{}, baseTerminate func(string)) error {
 	entrypoint := filepath.Join(ws.Dir, lease.Entrypoint)
 
 	timeout := defaultTimeout
@@ -529,8 +540,6 @@ func (r *Runner) runProcess(ctx context.Context, runCtx context.Context, cancel 
 	}()
 
 	// Stream logs
-	lc := newLogCollector(r, lease, state, terminate)
-
 	logFlushDone := make(chan struct{})
 	go func() {
 		defer close(logFlushDone)
@@ -557,6 +566,9 @@ func (r *Runner) runProcess(ctx context.Context, runCtx context.Context, cancel 
 	<-logFlushDone
 	<-timeoutDone
 
+	if reason := finalFailureLogLine(state, waitErr); reason != "" {
+		lc.logSetup(context.Background(), reason)
+	}
 	lc.flushRemaining()
 
 	return r.submitFinalResult(ctx, lease, state, waitErr)
@@ -610,8 +622,10 @@ func (r *Runner) executeRun(ctx context.Context, lease *LeaseResponse) error {
 		r.runHeartbeat(runCtx, lease, state, terminate)
 	}()
 
+	lc := newLogCollector(r, lease, state, terminate)
+
 	// Prepare workspace
-	ws, err := r.prepareWorkspace(runCtx, lease)
+	ws, err := r.prepareWorkspace(runCtx, lease, lc)
 	if err != nil {
 		cancel()
 		<-heartbeatDone
@@ -619,12 +633,13 @@ func (r *Runner) executeRun(ctx context.Context, lease *LeaseResponse) error {
 			r.logger.Warn("stale lease during workspace preparation")
 			return nil
 		}
+		lc.flushRemaining()
 		// submitFailure already called inside prepareWorkspace
 		return nil
 	}
 	defer ws.Cleanup()
 
-	return r.runProcess(ctx, runCtx, cancel, lease, state, ws, heartbeatDone, terminate)
+	return r.runProcess(ctx, runCtx, cancel, lease, state, ws, lc, heartbeatDone, terminate)
 }
 
 type AttemptResponse struct {
@@ -748,18 +763,67 @@ func (r *Runner) downloadArtifact(ctx context.Context, lease *LeaseResponse, des
 
 func (r *Runner) unpackArtifact(artifactPath, destDir string) error {
 	cmd := exec.Command("tar", "-xzf", artifactPath, "-C", destDir)
-	return cmd.Run()
+	return runCommand(cmd)
 }
 
 func (r *Runner) createVenv(ctx context.Context, venvPath string) error {
 	cmd := exec.CommandContext(ctx, r.cfg.PythonBin, "-m", "venv", venvPath)
-	return cmd.Run()
+	return runCommand(cmd)
 }
 
 func (r *Runner) installRequirements(ctx context.Context, venvPath, reqPath string) error {
 	pip := filepath.Join(venvPath, "bin", "pip")
 	cmd := exec.CommandContext(ctx, pip, "install", "-r", reqPath)
-	return cmd.Run()
+	return runCommand(cmd)
+}
+
+func runCommand(cmd *exec.Cmd) error {
+	captured := &cappedBuffer{maxBytes: commandErrorMaxBytes}
+	cmd.Stdout = captured
+	cmd.Stderr = captured
+
+	err := cmd.Run()
+	if err == nil {
+		return nil
+	}
+	message := strings.TrimSpace(captured.String())
+	if message == "" {
+		return err
+	}
+	message = strings.ReplaceAll(message, "\r\n", "\n")
+	message = strings.ReplaceAll(message, "\n", " | ")
+	if captured.truncated {
+		message += "...(truncated)"
+	}
+	return fmt.Errorf("%v: %s", err, message)
+}
+
+type cappedBuffer struct {
+	buf       bytes.Buffer
+	maxBytes  int
+	truncated bool
+}
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	if b.maxBytes <= 0 {
+		return len(p), nil
+	}
+	remaining := b.maxBytes - b.buf.Len()
+	if remaining <= 0 {
+		b.truncated = true
+		return len(p), nil
+	}
+	if len(p) > remaining {
+		_, _ = b.buf.Write(p[:remaining])
+		b.truncated = true
+		return len(p), nil
+	}
+	_, _ = b.buf.Write(p)
+	return len(p), nil
+}
+
+func (b *cappedBuffer) String() string {
+	return b.buf.String()
 }
 
 type logEntry struct {
@@ -791,28 +855,53 @@ func newLogCollector(r *Runner, lease *LeaseResponse, state *runState, terminate
 	}
 }
 
+func (lc *logCollector) enqueue(stream, line string) []logEntry {
+	if len(line) > logLineMaxBytes {
+		line = line[:logLineMaxBytes]
+	}
+	lc.mu.Lock()
+	defer lc.mu.Unlock()
+	lc.seq++
+	lc.logs = append(lc.logs, logEntry{
+		Seq:      lc.seq,
+		Stream:   stream,
+		Line:     line,
+		LoggedAt: time.Now().Format(time.RFC3339),
+	})
+	if len(lc.logs) < logBatchSize {
+		return nil
+	}
+	toFlush := lc.logs
+	lc.logs = nil
+	return toFlush
+}
+
+func (lc *logCollector) logSetup(ctx context.Context, line string) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return
+	}
+	if toFlush := lc.enqueue("stderr", line); len(toFlush) > 0 {
+		if err := lc.r.flushLogs(ctx, lc.lease, toFlush); err != nil {
+			if errors.Is(err, ErrStaleLease) {
+				lc.r.logger.Warn("stale lease on setup log flush")
+				lc.state.markStale()
+				lc.terminate("stale lease")
+				return
+			}
+			lc.r.logger.Warn("setup log flush failed", "error", err)
+			return
+		}
+	}
+	lc.flush(ctx)
+}
+
 // collect reads lines from reader and appends them to the log buffer, flushing when the batch is full.
 func (lc *logCollector) collect(ctx context.Context, reader io.Reader, stream string) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, logScanBufSize), logScanMaxTokenSize)
 	for scanner.Scan() {
-		line := scanner.Text()
-		if len(line) > logLineMaxBytes {
-			line = line[:logLineMaxBytes]
-		}
-
-		lc.mu.Lock()
-		lc.seq++
-		lc.logs = append(lc.logs, logEntry{
-			Seq:      lc.seq,
-			Stream:   stream,
-			Line:     line,
-			LoggedAt: time.Now().Format(time.RFC3339),
-		})
-		if len(lc.logs) >= logBatchSize {
-			toFlush := lc.logs
-			lc.logs = nil
-			lc.mu.Unlock()
+		if toFlush := lc.enqueue(stream, scanner.Text()); len(toFlush) > 0 {
 			if err := lc.r.flushLogs(ctx, lc.lease, toFlush); err != nil {
 				if errors.Is(err, ErrStaleLease) {
 					lc.r.logger.Warn("stale lease on log flush")
@@ -822,8 +911,6 @@ func (lc *logCollector) collect(ctx context.Context, reader io.Reader, stream st
 				}
 				lc.r.logger.Warn("log flush failed", "error", err)
 			}
-		} else {
-			lc.mu.Unlock()
 		}
 	}
 
@@ -1037,6 +1124,23 @@ func (r *Runner) submitResultSafe(ctx context.Context, lease *LeaseResponse, sta
 // submitFailure is a convenience for submitting a failed status with an error message.
 func (r *Runner) submitFailure(ctx context.Context, lease *LeaseResponse, errMsg string) error {
 	return r.submitResultSafe(ctx, lease, "failed", nil, ptr(errMsg))
+}
+
+func finalFailureLogLine(state *runState, waitErr error) string {
+	_, wasCancelled, isStale, wasTimedOut := state.snapshot()
+	if isStale || wasCancelled {
+		return ""
+	}
+	if wasTimedOut {
+		return "run failed: timeout exceeded"
+	}
+	if waitErr == nil {
+		return ""
+	}
+	if exitErr, ok := waitErr.(*exec.ExitError); ok {
+		return fmt.Sprintf("run failed: process exited with code %d", exitErr.ExitCode())
+	}
+	return fmt.Sprintf("run failed: %v", waitErr)
 }
 
 // submitFinalResult determines the final status from the run state and wait error, then submits.
