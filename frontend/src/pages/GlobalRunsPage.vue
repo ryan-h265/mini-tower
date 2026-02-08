@@ -1,16 +1,32 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useQuery } from '@tanstack/vue-query'
 import { apiClient } from '../api/client'
 import type { RunStatus } from '../api/types'
+import { formatAbsoluteTimestamp, formatRelativeTimestamp } from '../utils/time'
 import EmptyState from '../components/shared/EmptyState.vue'
 import ErrorBanner from '../components/shared/ErrorBanner.vue'
 import LoadingSpinner from '../components/shared/LoadingSpinner.vue'
 import StatusBadge from '../components/shared/StatusBadge.vue'
 
-const statusFilter = ref<'' | RunStatus>('')
-const appFilter = ref('')
-const search = ref('')
+const route = useRoute()
+const router = useRouter()
+
+const runStatusValues: RunStatus[] = ['queued', 'leased', 'running', 'cancelling', 'completed', 'failed', 'cancelled', 'dead']
+
+function normalizeRunStatus(value: unknown): '' | RunStatus {
+  if (typeof value !== 'string') return ''
+  return runStatusValues.includes(value as RunStatus) ? (value as RunStatus) : ''
+}
+
+function normalizeQueryText(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
+
+const statusFilter = ref<'' | RunStatus>(normalizeRunStatus(route.query.status))
+const appFilter = ref(normalizeQueryText(route.query.app))
+const search = ref(normalizeQueryText(route.query.q))
 
 const appsQuery = useQuery({
   queryKey: ['apps'],
@@ -41,26 +57,75 @@ const runs = computed(() => {
     return appSlug.includes(searchTerm) || run.status.includes(searchTerm) || runNo.includes(searchTerm)
   })
 })
+const isRunsLoading = computed(() => !runsQuery.error.value && !runsQuery.data.value)
 
-const statuses: Array<{ value: '' | RunStatus; label: string }> = [
-  { value: '', label: 'All statuses' },
-  { value: 'queued', label: 'Queued' },
-  { value: 'leased', label: 'Leased' },
-  { value: 'running', label: 'Running' },
-  { value: 'cancelling', label: 'Cancelling' },
-  { value: 'completed', label: 'Completed' },
-  { value: 'failed', label: 'Failed' },
-  { value: 'cancelled', label: 'Cancelled' },
-  { value: 'dead', label: 'Dead' }
-]
+const statuses: Array<{ value: '' | RunStatus; label: string }> = [{ value: '', label: 'All statuses' }, ...runStatusValues.map((value) => ({
+  value,
+  label: value.charAt(0).toUpperCase() + value.slice(1)
+}))]
 
-function formatTimestamp(value?: string): string {
-  if (!value) {
-    return '-'
-  }
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+function absoluteTimestamp(value?: string): string {
+  return formatAbsoluteTimestamp(value)
 }
+
+function relativeTimestamp(value?: string): string {
+  return formatRelativeTimestamp(value)
+}
+
+function openRun(runID: number): void {
+  void router.push(`/runs/${runID}`)
+}
+
+watch(
+  () => route.query.status,
+  (value) => {
+    const normalized = normalizeRunStatus(value)
+    if (statusFilter.value !== normalized) statusFilter.value = normalized
+  }
+)
+
+watch(
+  () => route.query.app,
+  (value) => {
+    const normalized = normalizeQueryText(value)
+    if (appFilter.value !== normalized) appFilter.value = normalized
+  }
+)
+
+watch(
+  () => route.query.q,
+  (value) => {
+    const normalized = normalizeQueryText(value)
+    if (search.value !== normalized) search.value = normalized
+  }
+)
+
+watch(statusFilter, (value) => {
+  const current = normalizeRunStatus(route.query.status)
+  if (current === value) return
+  const nextQuery = { ...route.query }
+  if (value) nextQuery.status = value
+  else delete nextQuery.status
+  void router.replace({ query: nextQuery })
+})
+
+watch(appFilter, (value) => {
+  const current = normalizeQueryText(route.query.app)
+  if (current === value) return
+  const nextQuery = { ...route.query }
+  if (value) nextQuery.app = value
+  else delete nextQuery.app
+  void router.replace({ query: nextQuery })
+})
+
+watch(search, (value) => {
+  const current = normalizeQueryText(route.query.q)
+  if (current === value) return
+  const nextQuery = { ...route.query }
+  if (value) nextQuery.q = value
+  else delete nextQuery.q
+  void router.replace({ query: nextQuery })
+})
 </script>
 
 <template>
@@ -91,6 +156,33 @@ function formatTimestamp(value?: string): string {
 
     <ErrorBanner v-if="runsQuery.error.value" :message="runsQuery.error.value.message" />
 
+    <section v-if="isRunsLoading" class="table-card">
+      <table class="table table-skeleton" aria-hidden="true">
+        <thead>
+          <tr>
+            <th>Run</th>
+            <th>App</th>
+            <th>Status</th>
+            <th>Version</th>
+            <th>Queued</th>
+            <th>Started</th>
+            <th>Finished</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="idx in 8" :key="`run-skeleton-${idx}`">
+            <td><span class="skeleton-line medium"/></td>
+            <td><span class="skeleton-line medium"/></td>
+            <td><span class="skeleton-line short"/></td>
+            <td><span class="skeleton-line tiny"/></td>
+            <td><span class="skeleton-line medium"/></td>
+            <td><span class="skeleton-line medium"/></td>
+            <td><span class="skeleton-line medium"/></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
     <section v-else-if="runs.length" class="table-card">
       <table class="table">
         <thead>
@@ -105,19 +197,37 @@ function formatTimestamp(value?: string): string {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="run in runs" :key="run.run_id">
+          <tr
+            v-for="run in runs"
+            :key="run.run_id"
+            class="run-row"
+            role="link"
+            tabindex="0"
+            @click="openRun(run.run_id)"
+            @keydown.enter.prevent="openRun(run.run_id)"
+            @keydown.space.prevent="openRun(run.run_id)"
+          >
             <td>
-              <RouterLink :to="`/runs/${run.run_id}`" class="run-link">#{{ run.run_no }}</RouterLink>
+              <span class="run-link">#{{ run.run_no }}</span>
             </td>
             <td>
-              <RouterLink v-if="run.app_slug" :to="`/apps/${run.app_slug}?tab=runs`" class="app-link">{{ run.app_slug }}</RouterLink>
+              <RouterLink
+                v-if="run.app_slug"
+                :to="`/apps/${run.app_slug}?tab=runs`"
+                class="app-link"
+                @click.stop
+                @keydown.enter.stop
+                @keydown.space.stop
+              >
+                {{ run.app_slug }}
+              </RouterLink>
               <span v-else class="muted">-</span>
             </td>
             <td><StatusBadge :status="run.status" /></td>
             <td><span class="version-chip">v{{ run.version_no }}</span></td>
-            <td class="ts">{{ formatTimestamp(run.queued_at) }}</td>
-            <td class="ts">{{ formatTimestamp(run.started_at) }}</td>
-            <td class="ts">{{ formatTimestamp(run.finished_at) }}</td>
+            <td class="ts"><span :title="absoluteTimestamp(run.queued_at)">{{ relativeTimestamp(run.queued_at) }}</span></td>
+            <td class="ts"><span :title="absoluteTimestamp(run.started_at)">{{ relativeTimestamp(run.started_at) }}</span></td>
+            <td class="ts"><span :title="absoluteTimestamp(run.finished_at)">{{ relativeTimestamp(run.finished_at) }}</span></td>
           </tr>
         </tbody>
       </table>
@@ -206,7 +316,7 @@ select {
   background: var(--bg-secondary);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
-  overflow: hidden;
+  overflow-x: auto;
 }
 
 .table {
@@ -241,11 +351,20 @@ tbody tr {
   transition: background var(--transition-fast);
 }
 
-tbody tr:hover {
+.run-row {
+  cursor: pointer;
+}
+
+.run-row:hover {
   background: color-mix(in srgb, var(--bg-tertiary) 60%, transparent);
 }
 
-tbody tr:hover .run-link {
+.run-row:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-blue) 60%, white);
+  outline-offset: -2px;
+}
+
+.run-row:hover .run-link {
   text-decoration: underline;
 }
 
@@ -292,9 +411,40 @@ tbody tr:hover .run-link {
   white-space: nowrap;
 }
 
+.table-skeleton .skeleton-line {
+  display: block;
+  height: 0.68rem;
+  border-radius: 999px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--bg-tertiary) 80%, transparent) 20%, color-mix(in srgb, var(--bg-elevated) 65%, white) 45%, color-mix(in srgb, var(--bg-tertiary) 80%, transparent) 80%);
+  background-size: 220% 100%;
+  animation: shimmer 1.5s linear infinite;
+}
+
+.table-skeleton .skeleton-line.medium { width: 66%; }
+.table-skeleton .skeleton-line.short { width: 44%; }
+.table-skeleton .skeleton-line.tiny { width: 35%; }
+
 @media (max-width: 900px) {
   .filters {
     grid-template-columns: 1fr;
+  }
+
+  .table th:nth-child(6),
+  .table th:nth-child(7),
+  .table td:nth-child(6),
+  .table td:nth-child(7) {
+    display: none;
+  }
+}
+
+@media (max-width: 700px) {
+  .table th:nth-child(5),
+  .table td:nth-child(5) {
+    display: none;
+  }
+
+  th, td {
+    padding: 0.48rem 0.55rem;
   }
 }
 </style>

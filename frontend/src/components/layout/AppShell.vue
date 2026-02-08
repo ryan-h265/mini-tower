@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import Sidebar from './Sidebar.vue'
 import TopBar from './TopBar.vue'
+import ToastStack from '../shared/ToastStack.vue'
 </script>
 
 <template>
@@ -11,6 +12,7 @@ import TopBar from './TopBar.vue'
       <main class="page-content">
         <RouterView />
       </main>
+      <ToastStack />
     </div>
   </div>
 </template>

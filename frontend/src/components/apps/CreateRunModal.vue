@@ -36,8 +36,6 @@ const emit = defineEmits<{ close: []; submit: [CreateRunRequest] }>()
 const selectedVersionNo = ref<number | null>(null)
 const priority = ref(0)
 const maxRetries = ref(0)
-const mode = ref<'form' | 'json'>('form')
-const rawJson = ref('{}')
 const formValues = ref<Record<string, string | number | boolean | ''>>({})
 const localError = ref('')
 
@@ -78,18 +76,8 @@ const schemaFields = computed<SchemaField[]>(() => {
     })
 })
 
-const canUseFormMode = computed(() => schemaFields.value.length > 0)
+const hasSchemaFields = computed(() => schemaFields.value.length > 0)
 const displayError = computed(() => localError.value || props.errorMessage)
-
-function parsedRawInput(): Record<string, unknown> {
-  const raw = rawJson.value.trim()
-  if (raw === '') return {}
-  let parsed: unknown
-  try { parsed = JSON.parse(raw) } catch { throw new Error('Input JSON must be valid.') }
-  if (parsed === null) return {}
-  if (typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Input JSON must be an object.')
-  return parsed as Record<string, unknown>
-}
 
 function defaultFieldValue(kind: SchemaField['kind'], schemaDefault?: unknown): string | number | boolean | '' {
   if (schemaDefault !== undefined && schemaDefault !== null) {
@@ -118,14 +106,16 @@ function initializeFromProps(): void {
   selectedVersionNo.value = props.seed?.version_no ?? latest
   priority.value = props.seed?.priority ?? 0
   maxRetries.value = props.seed?.max_retries ?? 0
-  const input = props.seed?.input ?? {}
-  rawJson.value = JSON.stringify(input, null, 2)
-  mode.value = 'form'
   localError.value = ''
 }
 
-function ensureFormModeAllowed(): void {
-  if (!canUseFormMode.value) mode.value = 'json'
+function formInputSnapshot(): Record<string, unknown> {
+  const snapshot: Record<string, unknown> = {}
+  for (const [name, value] of Object.entries(formValues.value)) {
+    if (value === '' || value === undefined) continue
+    snapshot[name] = value
+  }
+  return snapshot
 }
 
 function buildInputFromForm(): Record<string, unknown> {
@@ -143,23 +133,22 @@ function buildInputFromForm(): Record<string, unknown> {
 
 watch(() => props.open, (open) => {
   if (!open) return
-  initializeFromProps(); ensureFormModeAllowed(); syncFormValues(props.seed?.input ?? {})
+  initializeFromProps(); syncFormValues(props.seed?.input ?? {})
 })
 
 watch(schemaFields, () => {
-  try { syncFormValues(parsedRawInput()) } catch { syncFormValues({}) }
-  ensureFormModeAllowed()
+  syncFormValues(formInputSnapshot())
 })
 
 watch(selectedVersionNo, () => {
-  try { syncFormValues(parsedRawInput()) } catch { syncFormValues({}) }
+  syncFormValues(formInputSnapshot())
 })
 
 function submit(): void {
   localError.value = ''
   if (!selectedVersionNo.value) { localError.value = 'Select a version before creating a run.'; return }
   try {
-    const input = mode.value === 'json' || !canUseFormMode.value ? parsedRawInput() : buildInputFromForm()
+    const input = buildInputFromForm()
     emit('submit', { version_no: selectedVersionNo.value, input, priority: priority.value, max_retries: maxRetries.value })
   } catch (error) { localError.value = error instanceof Error ? error.message : 'Unable to submit run' }
 }
@@ -184,7 +173,7 @@ function submit(): void {
       </label>
 
       <!-- Default params display -->
-      <div v-if="canUseFormMode && mode === 'form'" class="params-section">
+      <div v-if="hasSchemaFields" class="params-section">
         <div class="params-header">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
           <span class="params-title">DEFAULT PARAMETERS</span>
@@ -218,17 +207,8 @@ function submit(): void {
           </div>
         </div>
       </div>
-
-      <!-- JSON mode -->
-      <label v-if="mode === 'json' || !canUseFormMode" class="field">
-        <span>Input JSON</span>
-        <textarea v-model="rawJson" rows="6" :disabled="busy" />
-      </label>
-
-      <!-- Mode toggle -->
-      <div v-if="canUseFormMode" class="mode-toggle">
-        <button type="button" :class="{ active: mode === 'form' }" :disabled="busy" @click="mode = 'form'">Form</button>
-        <button type="button" :class="{ active: mode === 'json' }" :disabled="busy" @click="mode = 'json'">JSON</button>
+      <div v-else class="params-empty">
+        This version has no configurable parameters.
       </div>
 
       <div class="divider"/>
@@ -250,7 +230,7 @@ h2 { margin: 0; font-size: 1.15rem; }
 .field { display: grid; gap: 0.3rem; }
 .field > span { color: var(--text-secondary); font-size: 0.82rem; font-weight: 500; }
 
-input, select, textarea {
+input, select {
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
   background: var(--bg-tertiary);
@@ -260,9 +240,7 @@ input, select, textarea {
 
 .select { appearance: none; cursor: pointer; }
 
-textarea { resize: vertical; font-family: var(--font-mono); font-size: 0.82rem; }
-
-input:focus, select:focus, textarea:focus {
+input:focus, select:focus {
   border-color: var(--accent-blue);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 15%, transparent);
   outline: none;
@@ -320,31 +298,13 @@ input:focus, select:focus, textarea:focus {
 
 .checkbox-row { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.82rem; color: var(--text-secondary); }
 
-/* Mode toggle */
-.mode-toggle {
-  display: flex;
-  gap: 2px;
-  background: var(--bg-tertiary);
+.params-empty {
+  border: 1px dashed var(--border-default);
   border-radius: var(--radius-sm);
-  padding: 2px;
-  width: fit-content;
-}
-
-.mode-toggle button {
-  padding: 0.3rem 0.65rem;
-  border-radius: 4px;
-  border: none;
-  background: transparent;
+  background: var(--bg-tertiary);
   color: var(--text-secondary);
-  font-size: 0.75rem;
-  cursor: pointer;
-  font-weight: 500;
-}
-
-.mode-toggle button.active {
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  box-shadow: var(--shadow-soft);
+  font-size: 0.82rem;
+  padding: 0.7rem 0.8rem;
 }
 
 .divider {

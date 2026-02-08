@@ -4,6 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { apiClient } from '../api/client'
 import type { CreateRunRequest, RunResponse } from '../api/types'
+import { useToast } from '../composables/useToast'
+import { formatAbsoluteTimestamp, formatRelativeTimestamp } from '../utils/time'
 import CreateRunModal from '../components/apps/CreateRunModal.vue'
 import FileDropZone from '../components/shared/FileDropZone.vue'
 import EmptyState from '../components/shared/EmptyState.vue'
@@ -16,6 +18,7 @@ type AppTab = 'overview' | 'runs' | 'versions'
 const route = useRoute()
 const router = useRouter()
 const queryClient = useQueryClient()
+const toast = useToast()
 
 const appSlug = computed(() => String(route.params.slug ?? ''))
 const activeTab = ref<AppTab>('overview')
@@ -66,6 +69,15 @@ const versions = computed(() => versionsQuery.data.value?.versions ?? [])
 const latestVersion = computed(() => versions.value[0])
 const backendRuns = computed(() => runsQuery.data.value?.runs ?? [])
 const hasAnyError = computed(() => Boolean(appQuery.error.value || versionsQuery.error.value || runsQuery.error.value))
+const isOverviewLoading = computed(
+  () => activeTab.value === 'overview' && !hasAnyError.value && (!appQuery.data.value || !versionsQuery.data.value || !runsQuery.data.value)
+)
+const isRunsLoading = computed(
+  () => (activeTab.value === 'overview' || activeTab.value === 'runs') && !runsQuery.error.value && !runsQuery.data.value
+)
+const isVersionsLoading = computed(
+  () => activeTab.value === 'versions' && !versionsQuery.error.value && !versionsQuery.data.value
+)
 
 const pendingRuns = ref<RunResponse[]>([])
 const runs = computed(() => {
@@ -90,10 +102,12 @@ const donutDasharray = computed(() => {
   return `${filled} ${circ - filled}`
 })
 
-function formatTimestamp(value?: string): string {
-  if (!value) return '-'
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+function absoluteTimestamp(value?: string): string {
+  return formatAbsoluteTimestamp(value)
+}
+
+function relativeTimestamp(value?: string): string {
+  return formatRelativeTimestamp(value)
 }
 
 function statusColor(run: RunResponse): string {
@@ -142,11 +156,13 @@ const createRunMutation = useMutation({
   onError: (error, _variables, context) => {
     if (context?.optimisticRunID) pendingRuns.value = pendingRuns.value.filter(r => r.run_id !== context.optimisticRunID)
     createRunError.value = error instanceof Error ? error.message : 'Failed to create run'
+    toast.error(createRunError.value)
   },
   onSuccess: async (created, _variables, context) => {
     if (context?.optimisticRunID) pendingRuns.value = pendingRuns.value.filter(r => r.run_id !== context.optimisticRunID)
     isCreateRunModalOpen.value = false
     createRunError.value = ''
+    toast.success(`Run #${created.run_no} created.`)
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['app-runs', appSlug.value] }),
       queryClient.invalidateQueries({ queryKey: ['runs'] }),
@@ -162,9 +178,13 @@ const uploadVersionMutation = useMutation({
     if (!artifact.value) throw new Error('Artifact file is required.')
     return apiClient.createVersion(appSlug.value, { artifact: artifact.value })
   },
-  onError: (error) => { uploadError.value = error instanceof Error ? error.message : 'Failed to upload version' },
-  onSuccess: async () => {
+  onError: (error) => {
+    uploadError.value = error instanceof Error ? error.message : 'Failed to upload version'
+    toast.error(uploadError.value)
+  },
+  onSuccess: async (version) => {
     artifact.value = null; uploadError.value = ''
+    toast.success(`Version v${version.version_no} uploaded.`)
     await queryClient.invalidateQueries({ queryKey: ['app-versions', appSlug.value] })
     setTab('versions')
   }
@@ -175,7 +195,11 @@ function openCreateRunModal(): void { createRunError.value = ''; isCreateRunModa
 function submitCreateRun(payload: CreateRunRequest): void { createRunError.value = ''; void createRunMutation.mutateAsync({ payload }) }
 function submitVersionUpload(): void {
   uploadError.value = ''
-  if (!artifact.value) { uploadError.value = 'Artifact file is required.'; return }
+  if (!artifact.value) {
+    uploadError.value = 'Artifact file is required.'
+    toast.error(uploadError.value)
+    return
+  }
   void uploadVersionMutation.mutateAsync()
 }
 </script>
@@ -190,10 +214,6 @@ function submitVersionUpload(): void {
         <h1 class="crumb-current">{{ appSlug }}</h1>
       </div>
       <div class="header-actions">
-        <button type="button" class="btn btn-outline" @click="setTab('versions')">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-          Schedules
-        </button>
         <button type="button" class="btn btn-primary" :disabled="versions.length === 0" @click="openCreateRunModal">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
           Create Run
@@ -226,7 +246,19 @@ function submitVersionUpload(): void {
 
     <!-- Overview tab -->
     <template v-if="activeTab === 'overview'">
-      <div class="overview-grid">
+      <div v-if="isOverviewLoading" class="overview-grid">
+        <section class="card panel">
+          <span class="skeleton-line medium"/>
+          <div class="skeleton-block tall"/>
+        </section>
+        <section class="card panel meta-panel">
+          <span class="skeleton-line medium"/>
+          <div class="skeleton-list">
+            <span v-for="idx in 4" :key="`meta-skeleton-${idx}`" class="skeleton-line"/>
+          </div>
+        </section>
+      </div>
+      <div v-else class="overview-grid">
         <section class="card panel">
           <div class="donut-section">
             <div class="donut-wrap">
@@ -252,73 +284,96 @@ function submitVersionUpload(): void {
           <div class="meta-grid">
             <div class="meta-item"><span class="ml">Slug</span><span>{{ app?.slug ?? appSlug }}</span></div>
             <div class="meta-item"><span class="ml">Status</span><span>{{ app?.disabled ? 'disabled' : 'active' }}</span></div>
-            <div class="meta-item"><span class="ml">Created</span><span>{{ formatTimestamp(app?.created_at) }}</span></div>
-            <div class="meta-item"><span class="ml">Updated</span><span>{{ formatTimestamp(app?.updated_at) }}</span></div>
+            <div class="meta-item"><span class="ml">Created</span><span :title="absoluteTimestamp(app?.created_at)">{{ relativeTimestamp(app?.created_at) }}</span></div>
+            <div class="meta-item"><span class="ml">Updated</span><span :title="absoluteTimestamp(app?.updated_at)">{{ relativeTimestamp(app?.updated_at) }}</span></div>
           </div>
         </section>
       </div>
     </template>
 
-    <!-- Runs tab -->
-    <template v-if="activeTab === 'runs'">
-      <div class="runs-list">
-        <div v-for="run in runs" :key="run.run_id" class="run-card card">
-          <div class="run-card-head">
-            <div class="run-card-left">
-              <RouterLink v-if="run.run_id > 0" :to="`/runs/${run.run_id}`" class="run-title">Run #{{ run.run_no }}</RouterLink>
-              <span v-else class="run-title">#{{ run.run_no }} (pending)</span>
-              <div class="run-chips">
-                <span class="chip chip-sm">DEFAULT</span>
-                <span class="chip chip-sm">V{{ run.version_no }}</span>
-                <span class="chip chip-sm">{{ run.retry_count }}/{{ run.max_retries }}</span>
-              </div>
-            </div>
-            <StatusBadge :status="run.status" />
-          </div>
-          <div class="run-card-bar">
-            <div class="bar-track">
-              <div class="bar-fill" :style="{ width: run.finished_at ? '100%' : run.status === 'running' ? '60%' : '30%', background: statusColor(run) }"/>
-            </div>
-          </div>
-          <div class="run-card-times">
-            <span>{{ formatTimestamp(run.queued_at) }}</span>
-            <span class="run-dur">{{ runDuration(run) }}</span>
-            <span>{{ formatTimestamp(run.finished_at) }}</span>
+    <!-- Runs content (shown on Overview and Runs tabs) -->
+    <template v-if="activeTab === 'overview' || activeTab === 'runs'">
+      <section :class="activeTab === 'overview' ? 'card panel overview-runs-panel' : ''">
+        <h2 v-if="activeTab === 'overview'">Runs</h2>
+        <div v-if="isRunsLoading" class="skeleton-runs">
+          <div v-for="idx in 4" :key="`runs-skeleton-${idx}`" class="run-card card">
+            <span class="skeleton-line medium"/>
+            <div class="skeleton-block"/>
+            <span class="skeleton-line short"/>
           </div>
         </div>
-        <EmptyState v-if="runs.length === 0" title="No runs yet" message="Create the first run for this app." />
-      </div>
+        <div v-else class="runs-list">
+          <component
+            v-for="run in runs"
+            :key="run.run_id"
+            :is="run.run_id > 0 ? 'RouterLink' : 'div'"
+            v-bind="run.run_id > 0 ? { to: `/runs/${run.run_id}` } : {}"
+            class="run-card card"
+            :class="{ clickable: run.run_id > 0 }"
+          >
+            <div class="run-card-head">
+              <div class="run-card-left">
+                <span class="run-title">{{ run.run_id > 0 ? `Run #${run.run_no}` : `#${run.run_no} (pending)` }}</span>
+                <div class="run-chips">
+                  <span class="chip chip-sm">DEFAULT</span>
+                  <span class="chip chip-sm">V{{ run.version_no }}</span>
+                  <span class="chip chip-sm">{{ run.retry_count }}/{{ run.max_retries }}</span>
+                </div>
+              </div>
+              <StatusBadge :status="run.status" />
+            </div>
+            <div class="run-card-bar">
+              <div class="bar-track">
+                <div class="bar-fill" :style="{ width: run.finished_at ? '100%' : run.status === 'running' ? '60%' : '30%', background: statusColor(run) }"/>
+              </div>
+            </div>
+            <div class="run-card-times">
+              <span :title="absoluteTimestamp(run.queued_at)">{{ relativeTimestamp(run.queued_at) }}</span>
+              <span class="run-dur">{{ runDuration(run) }}</span>
+              <span :title="absoluteTimestamp(run.finished_at)">{{ relativeTimestamp(run.finished_at) }}</span>
+            </div>
+          </component>
+          <EmptyState v-if="runs.length === 0" title="No runs yet" message="Create the first run for this app." />
+        </div>
+      </section>
     </template>
 
     <!-- Versions tab -->
     <template v-if="activeTab === 'versions'">
-      <section class="card panel">
-        <h2>Upload New Version</h2>
-        <p class="upload-hint">Upload a tar.gz artifact containing a Towerfile at its root.</p>
-        <ErrorBanner v-if="uploadError" :message="uploadError" />
-        <form class="upload-grid" @submit.prevent="submitVersionUpload">
-          <div class="full"><FileDropZone @file-selected="onArtifactSelected" /><p class="hint">Selected: {{ artifact?.name ?? 'None' }}</p></div>
-          <div class="full actions">
-            <button type="submit" class="btn btn-primary" :disabled="uploadVersionMutation.isPending.value">
-              {{ uploadVersionMutation.isPending.value ? 'Uploading...' : 'Upload Version' }}
-            </button>
+      <template v-if="isVersionsLoading">
+        <section class="card panel">
+          <span class="skeleton-line medium"/>
+          <div class="skeleton-block tall"/>
+        </section>
+      </template>
+      <template v-else>
+        <section class="card panel">
+          <h2>Upload New Version</h2>
+          <p class="upload-hint">Upload a tar.gz artifact containing a Towerfile at its root.</p>
+          <ErrorBanner v-if="uploadError" :message="uploadError" />
+          <form class="upload-grid" @submit.prevent="submitVersionUpload">
+            <div class="full"><FileDropZone @file-selected="onArtifactSelected" /><p class="hint">Selected: {{ artifact?.name ?? 'None' }}</p></div>
+            <div class="full actions">
+              <button type="submit" class="btn btn-primary" :disabled="uploadVersionMutation.isPending.value">
+                {{ uploadVersionMutation.isPending.value ? 'Uploading...' : 'Upload Version' }}
+              </button>
+            </div>
+          </form>
+        </section>
+        <section class="card panel" v-if="versions.length">
+          <h2>Version History</h2>
+          <div class="ver-list">
+            <div v-for="v in versions" :key="v.version_id" class="ver-row">
+              <span class="chip chip-sm">V{{ v.version_no }}</span>
+              <span class="ver-entry">{{ v.entrypoint }}</span>
+              <span v-if="v.towerfile_toml" class="chip chip-sm chip-towerfile">Towerfile</span>
+              <span v-else class="chip chip-sm chip-legacy">Legacy</span>
+              <span class="ver-sha mono">{{ v.artifact_sha256.slice(0, 12) }}...</span>
+              <span class="ver-time" :title="absoluteTimestamp(v.created_at)">{{ relativeTimestamp(v.created_at) }}</span>
+            </div>
           </div>
-        </form>
-      </section>
-
-      <section class="card panel" v-if="versions.length">
-        <h2>Version History</h2>
-        <div class="ver-list">
-          <div v-for="v in versions" :key="v.version_id" class="ver-row">
-            <span class="chip chip-sm">V{{ v.version_no }}</span>
-            <span class="ver-entry">{{ v.entrypoint }}</span>
-            <span v-if="v.towerfile_toml" class="chip chip-sm chip-towerfile">Towerfile</span>
-            <span v-else class="chip chip-sm chip-legacy">Legacy</span>
-            <span class="ver-sha mono">{{ v.artifact_sha256.slice(0, 12) }}...</span>
-            <span class="ver-time">{{ formatTimestamp(v.created_at) }}</span>
-          </div>
-        </div>
-      </section>
+        </section>
+      </template>
     </template>
 
     <CreateRunModal :open="isCreateRunModalOpen" :versions="versions" :busy="createRunMutation.isPending.value" :error-message="createRunError"
@@ -374,9 +429,6 @@ function submitVersionUpload(): void {
   border: 1px solid var(--border-default);
   background: transparent;
 }
-
-.btn-outline { color: var(--text-secondary); }
-.btn-outline:hover { border-color: var(--border-strong); color: var(--text-primary); }
 
 .btn-primary {
   background: var(--accent-blue);
@@ -485,24 +537,41 @@ function submitVersionUpload(): void {
 .ml { color: var(--text-secondary); }
 
 /* Runs */
+.overview-runs-panel h2 { margin: 0; }
+
 .runs-list { display: grid; gap: 0.65rem; }
 
 .run-card {
   padding: 0.85rem 1rem;
   display: grid;
   gap: 0.5rem;
+  text-decoration: none;
+  color: inherit;
   border-left: 2px solid transparent;
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
 }
 
-.run-card:hover {
+.run-card.clickable {
+  cursor: pointer;
+}
+
+.run-card.clickable:hover {
   border-left-color: var(--accent-blue);
   box-shadow: inset 0 0 20px color-mix(in srgb, var(--accent-blue) 3%, transparent);
+  transform: translateX(1px);
+}
+
+.run-card.clickable:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-blue) 60%, white);
+  outline-offset: 2px;
+}
+
+.run-card.clickable:hover .run-title {
+  color: var(--accent-blue);
 }
 .run-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; }
 .run-card-left { display: grid; gap: 0.3rem; }
 .run-title { font-weight: 600; font-size: 0.92rem; }
-.run-title:hover { color: var(--accent-blue); }
 .run-chips { display: flex; gap: 0.3rem; }
 
 .run-card-bar { padding-top: 0.15rem; }
@@ -566,9 +635,61 @@ textarea { resize: vertical; font-family: var(--font-mono); font-size: 0.82rem; 
 .chip-legacy { color: var(--text-tertiary); }
 .upload-hint { margin: 0; font-size: 0.82rem; color: var(--text-secondary); }
 
+/* Skeletons */
+.skeleton-line,
+.skeleton-block {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--bg-tertiary) 80%, transparent) 20%, color-mix(in srgb, var(--bg-elevated) 65%, white) 45%, color-mix(in srgb, var(--bg-tertiary) 80%, transparent) 80%);
+  background-size: 220% 100%;
+  animation: shimmer 1.5s linear infinite;
+}
+
+.skeleton-line {
+  display: block;
+  height: 0.72rem;
+  border-radius: 999px;
+}
+
+.skeleton-line.medium {
+  width: 42%;
+  height: 0.82rem;
+}
+
+.skeleton-line.short {
+  width: 30%;
+}
+
+.skeleton-block {
+  width: 100%;
+  height: 54px;
+  border-radius: var(--radius-sm);
+}
+
+.skeleton-block.tall {
+  height: 128px;
+}
+
+.skeleton-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.skeleton-runs {
+  display: grid;
+  gap: 0.65rem;
+}
+
 @media (max-width: 800px) {
+  .badges-row { align-items: flex-start; }
+  .tab-row { margin-left: 0; width: 100%; overflow-x: auto; }
   .overview-grid { grid-template-columns: 1fr; }
+  .donut-section { flex-direction: column; align-items: flex-start; gap: 0.8rem; }
+  .run-card-head { flex-direction: column; align-items: flex-start; }
+  .run-chips { flex-wrap: wrap; }
+  .run-card-times { flex-direction: column; align-items: flex-start; gap: 0.2rem; }
+  .ver-row { grid-template-columns: 1fr; gap: 0.35rem; }
+  .ver-sha { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .upload-grid { grid-template-columns: 1fr; }
+  .actions { justify-content: flex-start; }
   .page-header { flex-direction: column; align-items: flex-start; }
 }
 </style>

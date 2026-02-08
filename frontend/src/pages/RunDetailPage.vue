@@ -4,6 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { apiClient } from '../api/client'
 import type { CreateRunRequest, RunLogEntry, RunStatus } from '../api/types'
+import { useToast } from '../composables/useToast'
+import { formatAbsoluteTimestamp, formatRelativeTimestamp } from '../utils/time'
 import CreateRunModal from '../components/apps/CreateRunModal.vue'
 import ErrorBanner from '../components/shared/ErrorBanner.vue'
 import StatusBadge from '../components/shared/StatusBadge.vue'
@@ -11,6 +13,7 @@ import StatusBadge from '../components/shared/StatusBadge.vue'
 const route = useRoute()
 const router = useRouter()
 const queryClient = useQueryClient()
+const toast = useToast()
 const runId = computed(() => Number(route.params.runId))
 
 const logs = ref<RunLogEntry[]>([])
@@ -106,9 +109,11 @@ const cancelMutation = useMutation({
   onError: (error) => {
     statusOverride.value = null; cancelRequestedOverride.value = false
     actionError.value = error instanceof Error ? error.message : 'Failed to cancel run'
+    toast.error(actionError.value)
   },
   onSuccess: (updatedRun) => {
     statusOverride.value = null; cancelRequestedOverride.value = false
+    toast.success('Cancel requested.')
     queryClient.setQueryData(['run', runId.value], updatedRun)
     void queryClient.invalidateQueries({ queryKey: ['runs'] })
     void queryClient.invalidateQueries({ queryKey: ['recent-runs'] })
@@ -121,9 +126,13 @@ const rerunMutation = useMutation({
     if (!run.value?.app_slug) throw new Error('Run app slug is unavailable.')
     return apiClient.createRun(run.value.app_slug, payload)
   },
-  onError: (error) => { rerunError.value = error instanceof Error ? error.message : 'Failed to create rerun' },
+  onError: (error) => {
+    rerunError.value = error instanceof Error ? error.message : 'Failed to create rerun'
+    toast.error(rerunError.value)
+  },
   onSuccess: async (created) => {
     rerunError.value = ''; isRerunModalOpen.value = false
+    toast.success(`Rerun #${created.run_no} created.`)
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['runs'] }),
       queryClient.invalidateQueries({ queryKey: ['recent-runs'] }),
@@ -140,10 +149,12 @@ const rerunSeed = computed(() => {
 })
 const rerunVersions = computed(() => versionsQuery.data.value?.versions ?? [])
 
-function formatTimestamp(value?: string): string {
-  if (!value) return '-'
-  const d = new Date(value)
-  return Number.isNaN(d.getTime()) ? value : d.toLocaleString()
+function absoluteTimestamp(value?: string): string {
+  return formatAbsoluteTimestamp(value)
+}
+
+function relativeTimestamp(value?: string): string {
+  return formatRelativeTimestamp(value)
 }
 
 function runDuration(): string {
@@ -174,8 +185,15 @@ function submitRerun(payload: CreateRunRequest): void { rerunError.value = ''; v
 async function copyLogs(): Promise<void> {
   const text = logs.value.map(e => `[${e.stream}] ${e.line}`).join('\n')
   if (!text) return
-  try { await navigator.clipboard.writeText(text); copied.value = true; window.setTimeout(() => { copied.value = false }, 1000) }
-  catch { actionError.value = 'Clipboard copy is unavailable in this browser context.' }
+  try {
+    await navigator.clipboard.writeText(text)
+    copied.value = true
+    toast.success('Logs copied to clipboard.')
+    window.setTimeout(() => { copied.value = false }, 1000)
+  } catch {
+    actionError.value = 'Clipboard copy is unavailable in this browser context.'
+    toast.error(actionError.value)
+  }
 }
 </script>
 
@@ -213,9 +231,9 @@ async function copyLogs(): Promise<void> {
           <div class="progress-fill" :class="{ active: isActive(run.status) }" :style="{ width: run.finished_at ? '100%' : isActive(run.status) ? '60%' : '0%', '--status-color': statusColor() }"/>
         </div>
         <div class="status-times">
-          <span>{{ formatTimestamp(run.started_at) }}</span>
+          <span :title="absoluteTimestamp(run.started_at)">{{ relativeTimestamp(run.started_at) }}</span>
           <span class="dur">{{ runDuration() }}</span>
-          <span>{{ formatTimestamp(run.finished_at) }}</span>
+          <span :title="absoluteTimestamp(run.finished_at)">{{ relativeTimestamp(run.finished_at) }}</span>
         </div>
       </div>
     </div>

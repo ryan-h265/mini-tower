@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useQuery } from '@tanstack/vue-query'
 import { apiClient } from '../api/client'
 import type { AppResponse } from '../api/types'
@@ -8,9 +8,22 @@ import CreateAppModal from '../components/apps/CreateAppModal.vue'
 import ErrorBanner from '../components/shared/ErrorBanner.vue'
 import LoadingSpinner from '../components/shared/LoadingSpinner.vue'
 
+type AppStatusFilter = '' | 'healthy' | 'disabled'
+
+function normalizeStatusFilter(value: unknown): AppStatusFilter {
+  if (value === 'healthy' || value === 'disabled') return value
+  return ''
+}
+
+function normalizeTextFilter(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
+
+const route = useRoute()
 const router = useRouter()
-const search = ref('')
+const search = ref(normalizeTextFilter(route.query.q))
 const isCreateModalOpen = ref(false)
+const statusFilter = computed<AppStatusFilter>(() => normalizeStatusFilter(route.query.status))
 
 const appsQuery = useQuery({
   queryKey: ['apps'],
@@ -20,8 +33,11 @@ const appsQuery = useQuery({
 const apps = computed(() => appsQuery.data.value?.apps ?? [])
 const filteredApps = computed(() => {
   const term = search.value.trim().toLowerCase()
-  if (!term) return apps.value
-  return apps.value.filter((app) => {
+  let source = apps.value
+  if (statusFilter.value === 'healthy') source = source.filter(app => !app.disabled)
+  else if (statusFilter.value === 'disabled') source = source.filter(app => app.disabled)
+  if (!term) return source
+  return source.filter((app) => {
     const desc = app.description?.toLowerCase() ?? ''
     return app.slug.toLowerCase().includes(term) || desc.includes(term)
   })
@@ -31,6 +47,32 @@ function handleCreated(app: AppResponse): void {
   isCreateModalOpen.value = false
   void router.push(`/apps/${app.slug}`)
 }
+
+function setStatusFilter(next: AppStatusFilter): void {
+  const current = normalizeStatusFilter(route.query.status)
+  if (current === next) return
+  const query = { ...route.query }
+  if (next) query.status = next
+  else delete query.status
+  void router.replace({ query })
+}
+
+watch(
+  () => route.query.q,
+  (value) => {
+    const next = normalizeTextFilter(value)
+    if (search.value !== next) search.value = next
+  }
+)
+
+watch(search, (value) => {
+  const current = normalizeTextFilter(route.query.q)
+  if (current === value) return
+  const query = { ...route.query }
+  if (value) query.q = value
+  else delete query.q
+  void router.replace({ query })
+})
 </script>
 
 <template>
@@ -64,6 +106,11 @@ function handleCreated(app: AppResponse): void {
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         <input v-model.trim="search" type="search" placeholder="Search apps" />
       </div>
+      <div class="status-pills">
+        <button type="button" :class="{ active: statusFilter === '' }" @click="setStatusFilter('')">All</button>
+        <button type="button" :class="{ active: statusFilter === 'healthy' }" @click="setStatusFilter('healthy')">Healthy</button>
+        <button type="button" :class="{ active: statusFilter === 'disabled' }" @click="setStatusFilter('disabled')">Disabled</button>
+      </div>
       <LoadingSpinner v-if="appsQuery.isFetching.value" />
     </div>
 
@@ -71,7 +118,12 @@ function handleCreated(app: AppResponse): void {
 
     <!-- App cards -->
     <div v-if="filteredApps.length" class="app-list">
-      <article v-for="app in filteredApps" :key="app.app_id" class="app-card card" @click="router.push(`/apps/${app.slug}`)">
+      <RouterLink
+        v-for="app in filteredApps"
+        :key="app.app_id"
+        class="app-card card"
+        :to="`/apps/${app.slug}`"
+      >
         <div class="app-card-body">
           <div class="app-card-top">
             <h3 class="app-name">{{ app.slug }}</h3>
@@ -89,7 +141,7 @@ function handleCreated(app: AppResponse): void {
             <div class="bar-fill" :style="{ width: app.disabled ? '0%' : '100%', background: app.disabled ? 'var(--text-tertiary)' : 'var(--accent-green)' }"/>
           </div>
         </div>
-      </article>
+      </RouterLink>
     </div>
 
     <div v-else-if="!appsQuery.isFetching.value" class="empty-state card">
@@ -188,6 +240,7 @@ function handleCreated(app: AppResponse): void {
 .filters {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.6rem;
 }
 
@@ -217,6 +270,32 @@ function handleCreated(app: AppResponse): void {
   min-width: 0;
 }
 
+.status-pills {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+}
+
+.status-pills button {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 0.35rem 0.55rem;
+  border-radius: 4px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.status-pills button.active {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-soft);
+}
+
 /* App list */
 .app-list {
   display: grid;
@@ -228,6 +307,8 @@ function handleCreated(app: AppResponse): void {
   display: grid;
   gap: 0.75rem;
   cursor: pointer;
+  text-decoration: none;
+  color: inherit;
   transition: border-color var(--transition-base), box-shadow var(--transition-base), transform var(--transition-base);
   border-left: 2px solid transparent;
 }
@@ -237,6 +318,11 @@ function handleCreated(app: AppResponse): void {
   border-left-color: var(--accent-blue);
   box-shadow: var(--shadow-soft), var(--shadow-glow-blue);
   transform: translateX(2px);
+}
+
+.app-card:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-blue) 60%, white);
+  outline-offset: 2px;
 }
 
 .app-card-top {

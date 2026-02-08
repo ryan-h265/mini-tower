@@ -38,6 +38,15 @@ const disabledApps = computed(() => {
   return apps.filter(a => a.disabled).length
 })
 
+const isStatsLoading = computed(
+  () => !appsQuery.error.value && !summaryQuery.error.value && (!appsQuery.data.value || !summaryQuery.data.value)
+)
+const isMainPanelsLoading = computed(
+  () => !appsQuery.error.value && !summaryQuery.error.value && !recentRunsQuery.error.value
+    && (!appsQuery.data.value || !summaryQuery.data.value || !recentRunsQuery.data.value)
+)
+const isRecentListLoading = computed(() => !recentRunsQuery.error.value && !recentRunsQuery.data.value)
+
 const donutPercent = computed(() => {
   if (totalRuns.value === 0) return 0
   return Math.round((terminalRuns.value / totalRuns.value) * 100)
@@ -128,39 +137,58 @@ onMounted(() => {
     </div>
 
     <!-- Stat cards -->
-    <div class="stat-row">
-      <article class="stat-card">
+    <div v-if="isStatsLoading" class="stat-row">
+      <article v-for="idx in 4" :key="`stat-skeleton-${idx}`" class="stat-card stat-skeleton">
+        <div class="stat-icon skeleton-box"/>
+        <span class="skeleton-line short"/>
+        <span class="skeleton-line tiny"/>
+      </article>
+    </div>
+    <div v-else class="stat-row">
+      <RouterLink to="/apps" class="stat-card">
         <div class="stat-icon blue">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
         </div>
         <span class="stat-label">All Apps</span>
         <span class="stat-value">{{ appsCount }}</span>
-      </article>
-      <article class="stat-card">
+      </RouterLink>
+      <RouterLink :to="{ path: '/apps', query: { status: 'healthy' } }" class="stat-card">
         <div class="stat-icon green">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
         </div>
         <span class="stat-label">Healthy Apps</span>
         <span class="stat-value">{{ healthyApps }}</span>
-      </article>
-      <article class="stat-card accent">
+      </RouterLink>
+      <RouterLink :to="{ path: '/runs', query: { status: 'running' } }" class="stat-card accent">
         <div class="stat-icon cyan">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
         </div>
         <span class="stat-label">Running Apps</span>
         <span class="stat-value">{{ activeRuns }}</span>
-      </article>
-      <article class="stat-card">
+      </RouterLink>
+      <RouterLink :to="{ path: '/apps', query: { status: 'disabled' } }" class="stat-card">
         <div class="stat-icon muted">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
         </div>
         <span class="stat-label">Disabled Apps</span>
         <span class="stat-value">{{ disabledApps }}</span>
-      </article>
+      </RouterLink>
     </div>
 
     <!-- Main grid: chart + issues -->
-    <div class="main-grid">
+    <div v-if="isMainPanelsLoading" class="main-grid">
+      <section class="card panel">
+        <div class="skeleton-line medium"/>
+        <div class="skeleton-chart"/>
+      </section>
+      <section class="card panel">
+        <div class="skeleton-line medium"/>
+        <div class="skeleton-list">
+          <div v-for="idx in 4" :key="`issue-skeleton-${idx}`" class="skeleton-line"/>
+        </div>
+      </section>
+    </div>
+    <div v-else class="main-grid">
       <!-- Recent Runs panel with donut -->
       <section class="card panel runs-panel">
         <header class="panel-head">
@@ -220,10 +248,15 @@ onMounted(() => {
             <span>All apps are healthy!</span>
           </div>
           <div v-else class="issues-list">
-            <div v-for="app in (appsQuery.data.value?.apps ?? []).filter(a => a.disabled)" :key="app.app_id" class="issue-row">
+            <RouterLink
+              v-for="app in (appsQuery.data.value?.apps ?? []).filter(a => a.disabled)"
+              :key="app.app_id"
+              :to="`/apps/${app.slug}`"
+              class="issue-row"
+            >
               <span class="issue-dot"/>
-              <RouterLink :to="`/apps/${app.slug}`">{{ app.slug }}</RouterLink>
-            </div>
+              <span class="issue-name">{{ app.slug }}</span>
+            </RouterLink>
           </div>
         </div>
       </section>
@@ -232,48 +265,48 @@ onMounted(() => {
     <!-- Recent runs list -->
     <section class="card panel">
       <div class="run-list">
-        <div v-for="run in recentRuns" :key="run.run_id" class="run-row">
-          <div class="run-meta">
-            <RouterLink v-if="run.app_slug" :to="`/apps/${run.app_slug}`" class="run-app">{{ run.app_slug }}</RouterLink>
-            <span class="run-sep">&rsaquo;</span>
-            <RouterLink :to="`/runs/${run.run_id}`" class="run-num">Run #{{ run.run_no }}</RouterLink>
-            <StatusBadge :status="run.status" />
-          </div>
-          <div class="run-bar-row">
-            <div class="run-bar-track">
-              <div class="run-bar-fill" :style="{ width: run.finished_at || run.status === 'completed' || run.status === 'failed' ? '100%' : '60%', background: statusColor(run) }"/>
+        <template v-if="isRecentListLoading">
+          <div v-for="idx in 4" :key="`run-skeleton-${idx}`" class="run-row run-row-skeleton">
+            <div class="run-meta">
+              <span class="skeleton-line short"/>
+              <span class="skeleton-line tiny"/>
             </div>
-            <span class="run-dur">{{ runDuration(run) }}</span>
+            <div class="run-bar-row">
+              <div class="run-bar-track">
+                <div class="run-bar-fill skeleton-fill"/>
+              </div>
+              <span class="skeleton-line tiny"/>
+            </div>
           </div>
-        </div>
-        <p v-if="recentRuns.length === 0" class="empty-text">No runs yet.</p>
+        </template>
+        <template v-else>
+          <RouterLink
+            v-for="run in recentRuns"
+            :key="run.run_id"
+            class="run-row"
+            :to="`/runs/${run.run_id}`"
+          >
+            <div class="run-meta">
+              <span v-if="run.app_slug" class="run-app">{{ run.app_slug }}</span>
+              <span v-if="run.app_slug" class="run-sep">&rsaquo;</span>
+              <span class="run-num">Run #{{ run.run_no }}</span>
+              <StatusBadge :status="run.status" />
+            </div>
+            <div class="run-bar-row">
+              <div class="run-bar-track">
+                <div class="run-bar-fill" :style="{ width: run.finished_at || run.status === 'completed' || run.status === 'failed' ? '100%' : '60%', background: statusColor(run) }"/>
+              </div>
+              <span class="run-dur">{{ runDuration(run) }}</span>
+            </div>
+          </RouterLink>
+          <p v-if="recentRuns.length === 0" class="empty-text">No runs yet.</p>
+        </template>
       </div>
       <div class="panel-foot">
         <RouterLink to="/runs" class="view-all">View all &rsaquo;</RouterLink>
       </div>
     </section>
 
-    <!-- Community row -->
-    <div class="community-row">
-      <section class="card panel community-card">
-        <h3>Join our community</h3>
-        <p class="subtitle">Follow us on our social media channels.</p>
-        <div class="social-links">
-          <span class="social-chip">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
-            Github
-          </span>
-          <span class="social-chip">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 00-2.122-2.136C19.505 3.546 12 3.546 12 3.546s-7.505 0-9.377.504A3.017 3.017 0 00.502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 002.122 2.136c1.871.504 9.376.504 9.376.504s7.505 0 9.377-.504a3.015 3.015 0 002.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
-            Youtube
-          </span>
-          <span class="social-chip">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
-            LinkedIn
-          </span>
-        </div>
-      </section>
-    </div>
   </div>
 </template>
 
@@ -328,6 +361,8 @@ onMounted(() => {
   background: var(--gradient-surface);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-lg);
+  text-decoration: none;
+  color: inherit;
   transition: border-color var(--transition-base), box-shadow var(--transition-base), transform var(--transition-base);
 }
 
@@ -335,6 +370,11 @@ onMounted(() => {
   border-color: var(--border-strong);
   transform: translateY(-1px);
   box-shadow: var(--shadow-card), var(--shadow-glow-blue);
+}
+
+.stat-card:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-blue) 60%, white);
+  outline-offset: 2px;
 }
 
 .stat-card.accent {
@@ -371,6 +411,47 @@ onMounted(() => {
   font-weight: 700;
   letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
+}
+
+/* Skeletons */
+.stat-skeleton {
+  pointer-events: none;
+}
+
+.skeleton-box,
+.skeleton-line,
+.skeleton-fill,
+.skeleton-chart {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--bg-tertiary) 80%, transparent) 20%, color-mix(in srgb, var(--bg-elevated) 65%, white) 45%, color-mix(in srgb, var(--bg-tertiary) 80%, transparent) 80%);
+  background-size: 220% 100%;
+  animation: shimmer 1.5s linear infinite;
+}
+
+.skeleton-box {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+}
+
+.skeleton-line {
+  display: block;
+  height: 0.72rem;
+  border-radius: 999px;
+}
+
+.skeleton-line.short { width: 55%; }
+.skeleton-line.medium { width: 38%; height: 0.85rem; }
+.skeleton-line.tiny { width: 26%; }
+
+.skeleton-chart {
+  width: 100%;
+  height: 140px;
+  border-radius: var(--radius-sm);
+}
+
+.skeleton-list {
+  display: grid;
+  gap: 0.45rem;
 }
 
 /* Main grid */
@@ -548,6 +629,22 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  padding: 0.35rem 0.45rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  transition: border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.issue-row:hover {
+  border-color: var(--border-default);
+  background: color-mix(in srgb, var(--bg-tertiary) 70%, transparent);
+  color: var(--text-primary);
+}
+
+.issue-row:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-blue) 60%, white);
+  outline-offset: 2px;
 }
 
 .issue-dot {
@@ -555,6 +652,11 @@ onMounted(() => {
   height: 6px;
   border-radius: 50%;
   background: var(--accent-red);
+}
+
+.issue-name {
+  font-size: 0.84rem;
+  font-weight: 500;
 }
 
 /* Run list */
@@ -570,13 +672,27 @@ onMounted(() => {
   border-radius: var(--radius-md);
   display: grid;
   gap: 0.5rem;
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
   border-left: 2px solid transparent;
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
 }
 
 .run-row:hover {
   border-left-color: var(--accent-blue);
   box-shadow: inset 0 0 20px color-mix(in srgb, var(--accent-blue) 3%, transparent);
+  transform: translateX(1px);
+}
+
+.run-row:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-blue) 60%, white);
+  outline-offset: 2px;
+}
+
+.run-row:hover .run-app,
+.run-row:hover .run-num {
+  color: var(--accent-blue);
 }
 
 .run-meta {
@@ -591,10 +707,6 @@ onMounted(() => {
   font-size: 0.88rem;
 }
 
-.run-app:hover {
-  color: var(--accent-blue);
-}
-
 .run-sep {
   color: var(--text-tertiary);
 }
@@ -602,10 +714,6 @@ onMounted(() => {
 .run-num {
   color: var(--text-secondary);
   font-size: 0.82rem;
-}
-
-.run-num:hover {
-  color: var(--accent-blue);
 }
 
 .run-bar-row {
@@ -626,6 +734,14 @@ onMounted(() => {
   height: 100%;
   border-radius: 3px;
   transition: width 600ms ease;
+}
+
+.run-row-skeleton {
+  pointer-events: none;
+}
+
+.skeleton-fill {
+  width: 70%;
 }
 
 .run-dur {

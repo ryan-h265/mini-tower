@@ -3,9 +3,11 @@ import { ref } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import { apiClient } from '../api/client'
 import type { TokenRole } from '../api/types'
+import { useToast } from '../composables/useToast'
 import ErrorBanner from '../components/shared/ErrorBanner.vue'
 
 const auth = useAuthStore()
+const toast = useToast()
 
 const name = ref('')
 const role = ref<TokenRole>('member')
@@ -29,8 +31,10 @@ async function submit(): Promise<void> {
     })
     createdToken.value = response.token
     createdRole.value = response.role
+    toast.success('Token created. Copy it now because it will not be shown again.')
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : 'Failed to create token'
+    toast.error(errorMessage.value)
   } finally {
     busy.value = false
   }
@@ -43,11 +47,13 @@ async function copyToken(): Promise<void> {
   try {
     await navigator.clipboard.writeText(createdToken.value)
     copied.value = true
+    toast.success('Token copied to clipboard.')
     window.setTimeout(() => {
       copied.value = false
     }, 1200)
   } catch {
     errorMessage.value = 'Clipboard copy is unavailable in this browser context.'
+    toast.error(errorMessage.value)
   }
 }
 </script>

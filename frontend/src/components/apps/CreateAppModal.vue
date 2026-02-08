@@ -5,11 +5,13 @@ import Modal from '../shared/Modal.vue'
 import ErrorBanner from '../shared/ErrorBanner.vue'
 import { apiClient } from '../../api/client'
 import type { AppResponse, ListAppsResponse } from '../../api/types'
+import { useToast } from '../../composables/useToast'
 
 const props = defineProps<{ open: boolean }>()
 const emit = defineEmits<{ close: []; created: [AppResponse] }>()
 
 const queryClient = useQueryClient()
+const toast = useToast()
 const slug = ref('')
 const description = ref('')
 const errorMessage = ref('')
@@ -51,8 +53,14 @@ const createMutation = useMutation({
   onError: (error, _variables, context) => {
     if (context?.previous) queryClient.setQueryData(['apps'], context.previous)
     errorMessage.value = error instanceof Error ? error.message : 'Failed to create app'
+    toast.error(errorMessage.value)
   },
-  onSuccess: (app) => { emit('created', app); emit('close'); resetForm() },
+  onSuccess: (app) => {
+    toast.success(`App "${app.slug}" created.`)
+    emit('created', app)
+    emit('close')
+    resetForm()
+  },
   onSettled: async () => { await queryClient.invalidateQueries({ queryKey: ['apps'] }) }
 })
 
