@@ -1,0 +1,21 @@
+[app]
+name = "hello-world"
+script = "./task.py"
+source = [
+  "./task.py",
+]
+
+[[parameters]]
+name = "friend"
+description = "Someone that is close to you."
+default = "Steve"
+
+[[parameters]]
+name = "foe"
+description = "Something that you'd prefer to avoid."
+default = "Carl"
+
+[[parameters]]
+name = "count"
+description = "Number of times to greet."
+default = "10"
