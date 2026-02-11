@@ -1,0 +1,12 @@
+.git
+*.db
+*.db-shm
+*.db-wal
+bin/
+objects/
+.env
+.claude/
+.gocache/
+minitowerd
+minitower-runner
+.cover.out

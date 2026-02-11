@@ -1,0 +1,90 @@
+services:
+  minitowerd:
+    build:
+      context: .
+      target: minitowerd
+    ports:
+      - "8080:8080"
+    environment:
+      MINITOWER_LISTEN_ADDR: ":8080"
+      MINITOWER_DB_PATH: /data/minitower.db
+      MINITOWER_OBJECTS_DIR: /data/objects
+      MINITOWER_BOOTSTRAP_TOKEN: dev
+      MINITOWER_RUNNER_REGISTRATION_TOKEN: runner-secret
+      MINITOWER_CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+    volumes:
+      - minitower-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  runner-1:
+    build:
+      context: .
+      target: minitower-runner
+    environment:
+      MINITOWER_SERVER_URL: http://minitowerd:8080
+      MINITOWER_RUNNER_NAME: runner-1
+      MINITOWER_RUNNER_REGISTRATION_TOKEN: runner-secret
+      MINITOWER_POLL_INTERVAL: 2s
+    depends_on:
+      minitowerd:
+        condition: service_healthy
+
+  runner-2:
+    build:
+      context: .
+      target: minitower-runner
+    environment:
+      MINITOWER_SERVER_URL: http://minitowerd:8080
+      MINITOWER_RUNNER_NAME: runner-2
+      MINITOWER_RUNNER_REGISTRATION_TOKEN: runner-secret
+      MINITOWER_POLL_INTERVAL: 2s
+    depends_on:
+      minitowerd:
+        condition: service_healthy
+
+  frontend:
+    image: node:22-alpine
+    working_dir: /workspace/frontend
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
+    environment:
+      VITE_API_BASE_URL: ""
+      VITE_DEV_PROXY_TARGET: http://minitowerd:8080
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./:/workspace
+      - frontend-node-modules:/workspace/frontend/node_modules
+    depends_on:
+      minitowerd:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v3.4.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - minitowerd
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    ports:
+      - "3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
+volumes:
+  minitower-data:
+  frontend-node-modules:

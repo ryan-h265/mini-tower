@@ -1,0 +1,16 @@
+/bin
+/objects
+/minitower.db
+*.db
+*.db-shm
+*.db-wal
+.env
+.claude/
+.gocache/
+.cover.out
+.demo-token
+/minitowerd
+/minitower-runner
+/minitower-cli
+/frontend/node_modules
+/frontend/dist
